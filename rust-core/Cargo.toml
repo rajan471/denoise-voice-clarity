@@ -1,0 +1,51 @@
+[package]
+name = "denoise-voice-core"
+version = "0.1.0"
+edition = "2021"
+description = "Client-side noise suppression + voice clarity chain for LiveKit (Krisp replacement)"
+license = "MIT OR Apache-2.0"
+
+[lib]
+# rlib for native/JNI/Swift linking; cdylib for the WASM target.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Default builds the passthrough reference engine + the full clarity chain.
+# This compiles and unit-tests today with no external models.
+default = []
+# DeepFilterNet 3 denoiser. Pulls `deep_filter` + tract. The tract crates are
+# pinned to =0.21.4 to match upstream's lockfile (newer 0.21.x renamed APIs
+# `deep_filter` main still uses, breaking the build).
+dfn = [
+  "dep:deep_filter", "dep:ndarray",
+  "dep:tract-core", "dep:tract-onnx", "dep:tract-pulse",
+  "dep:tract-hir", "dep:tract-nnef", "dep:tract-linalg",
+]
+# wasm-bindgen bindings for the web target.
+wasm = ["dep:wasm-bindgen"]
+
+[dependencies]
+wasm-bindgen = { version = "0.2", optional = true }
+# DeepFilterNet. Git-pinned to the upstream repo so we get the `tract` inference
+# API + `default-model` (bundles the model weights into the binary — no external
+# file needed). default-features off so we don't pull dataset/codec deps.
+deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", default-features = false, features = ["tract", "default-model"], optional = true }
+ndarray = { version = "0.15", optional = true }
+
+# Pin tract to upstream's exact version (see the `dfn` feature comment).
+tract-core = { version = "=0.21.4", optional = true }
+tract-onnx = { version = "=0.21.4", optional = true }
+tract-pulse = { version = "=0.21.4", optional = true }
+tract-hir = { version = "=0.21.4", optional = true }
+tract-nnef = { version = "=0.21.4", optional = true }
+tract-linalg = { version = "=0.21.4", optional = true }
+
+# On wasm, any transitive getrandom needs the browser backend. Non-optional so
+# it's always active on wasm32 (and absent elsewhere) — no feature wiring needed.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
