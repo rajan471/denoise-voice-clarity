@@ -185,6 +185,10 @@ mod tests {
                 dvc_process_banded(std::ptr::null_mut(), 3, 160, std::ptr::null_mut()),
                 -1
             );
+            assert_eq!(dvc_reset(std::ptr::null_mut(), 48_000), -1);
+            assert!(!dvc_dfn_active(std::ptr::null()));
+            dvc_set_enabled(std::ptr::null_mut(), true); // must not crash
+            dvc_set_attenuation_limit_db(std::ptr::null_mut(), 30.0); // must not crash
             dvc_destroy(std::ptr::null_mut()); // must not crash
         }
     }
