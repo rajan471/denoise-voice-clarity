@@ -7,11 +7,13 @@ import DenoiseVoiceCoreFFI
 /// without the Rust binary. Mirrors the cbindgen header in
 /// `Sources/DenoiseVoiceCoreFFI/include/denoise_voice_core.h`; the opaque
 /// `DvcHandle *` imports into Swift as `OpaquePointer`.
+///
+/// Note: `dvc_reset` is intentionally omitted — the iOS re-init path goes
+/// through `initialize`; `dvc_reset` remains available for the Android adapter.
 protocol VoiceClarityCore: AnyObject {
     func create() -> OpaquePointer?
     func destroy(_ h: OpaquePointer?)
     func initialize(_ h: OpaquePointer?, sampleRate: Int32, channels: Int32) -> Int32
-    func reset(_ h: OpaquePointer?, newRate: Int32) -> Int32
     func processBanded(_ h: OpaquePointer?, bands: Int32, framesPerBand: Int32,
                        buffer: UnsafeMutablePointer<Float>) -> Int32
     func setEnabled(_ h: OpaquePointer?, _ on: Bool)
@@ -25,7 +27,6 @@ final class RealCore: VoiceClarityCore {
     func initialize(_ h: OpaquePointer?, sampleRate: Int32, channels: Int32) -> Int32 {
         dvc_init(h, sampleRate, channels)
     }
-    func reset(_ h: OpaquePointer?, newRate: Int32) -> Int32 { dvc_reset(h, newRate) }
     func processBanded(_ h: OpaquePointer?, bands: Int32, framesPerBand: Int32,
                        buffer: UnsafeMutablePointer<Float>) -> Int32 {
         dvc_process_banded(h, bands, framesPerBand, buffer)
@@ -63,6 +64,8 @@ public final class VoiceClarityProcessor: NSObject, AudioCustomProcessingDelegat
     // (use-after-free). Uncontended in steady state, so it is ~free on the
     // audio path (~100 Hz); contention only happens during teardown, which is
     // exactly when we need exclusion. Mirrors the Android adapter's decision.
+    // Sendable upheld by routing all mutable state through `lock`; Swift
+    // cannot verify this statically, hence @unchecked Sendable on the class.
     private let lock = NSLock()
 
     private var handle: OpaquePointer?
@@ -80,6 +83,9 @@ public final class VoiceClarityProcessor: NSObject, AudioCustomProcessingDelegat
 
     deinit {
         // Last-resort cleanup; callers should release explicitly after detach.
+        // Reading `handle` here without the lock is safe — deinit implies
+        // exclusive access (the SDK holds a strong ref during callbacks, so no
+        // concurrent reader can exist once deinit fires).
         if let h = handle { core.destroy(h) }
     }
 

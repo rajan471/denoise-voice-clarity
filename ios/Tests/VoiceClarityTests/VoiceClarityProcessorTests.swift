@@ -3,18 +3,20 @@ import XCTest
 
 final class FakeCore: VoiceClarityCore {
     var processResult: Int32 = 0
-    var inits = 0, resets = 0, destroys = 0, processCalls = 0
+    var inits = 0, destroys = 0, processCalls = 0
     var lastShape: (bands: Int32, framesPerBand: Int32)?
+    // Recorded calls for pre-init re-apply assertions
+    var setEnabledCalls: [(OpaquePointer?, Bool)] = []
+    var setAttenuationCalls: [Float] = []
     func create() -> OpaquePointer? { OpaquePointer(bitPattern: 1) }
     func destroy(_ h: OpaquePointer?) { destroys += 1 }
     func initialize(_ h: OpaquePointer?, sampleRate: Int32, channels: Int32) -> Int32 { inits += 1; return 0 }
-    func reset(_ h: OpaquePointer?, newRate: Int32) -> Int32 { resets += 1; return 0 }
     func processBanded(_ h: OpaquePointer?, bands: Int32, framesPerBand: Int32,
                        buffer: UnsafeMutablePointer<Float>) -> Int32 {
         processCalls += 1; lastShape = (bands, framesPerBand); return processResult
     }
-    func setEnabled(_ h: OpaquePointer?, _ on: Bool) {}
-    func setAttenuationLimitDb(_ h: OpaquePointer?, _ db: Float) {}
+    func setEnabled(_ h: OpaquePointer?, _ on: Bool) { setEnabledCalls.append((h, on)) }
+    func setAttenuationLimitDb(_ h: OpaquePointer?, _ db: Float) { setAttenuationCalls.append(db) }
 }
 
 final class VoiceClarityProcessorTests: XCTestCase {
@@ -53,6 +55,11 @@ final class VoiceClarityProcessorTests: XCTestCase {
             }
         }
         XCTAssertFalse(p.isHealthy)
+        // The 51st call must be gated off — processCalls must still be 50.
+        buf.withUnsafeMutableBufferPointer { ptr in
+            p.processChannel(bands: 3, framesPerBand: 160, buffer: ptr.baseAddress!)
+        }
+        XCTAssertEqual(core.processCalls, 50)
     }
 
     func testSuccessResetsErrorBudget() {
@@ -98,5 +105,33 @@ final class VoiceClarityProcessorTests: XCTestCase {
             p.processChannel(bands: 3, framesPerBand: 160, buffer: ptr.baseAddress!)
         }
         XCTAssertEqual(core.processCalls, 0)
+    }
+
+    /// Settings applied before `audioProcessingInitialize` must be forwarded
+    /// to the core after init (pre-init re-apply). A live change post-init must
+    /// also reach the core immediately.
+    func testPreInitSettersAreAppliedOnInit() {
+        let core = FakeCore()
+        let p = VoiceClarityProcessor(core: core)
+
+        // Apply settings BEFORE init — core has no handle yet, so setEnabled /
+        // setAttenuationLimitDb are NOT forwarded until init re-applies them.
+        p.setAttenuationLimitDb(24.0)
+        p.isUserEnabled = false
+
+        // No calls to core before init
+        XCTAssertEqual(core.setAttenuationCalls.count, 0)
+        XCTAssertEqual(core.setEnabledCalls.count, 0)
+
+        p.audioProcessingInitialize(sampleRate: 48_000, channels: 1)
+
+        // After init, both settings must have been re-applied.
+        XCTAssertEqual(core.setAttenuationCalls.last, 24.0)
+        // setEnabled is called once for userEnabled (false) during re-apply.
+        XCTAssertEqual(core.setEnabledCalls.last?.1, false)
+
+        // A live post-init toggle must also reach the core immediately.
+        p.isUserEnabled = true
+        XCTAssertEqual(core.setEnabledCalls.last?.1, true)
     }
 }
