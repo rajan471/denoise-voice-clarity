@@ -59,6 +59,9 @@ codegen-units = 1
 #   APIs (`symbol_table` -> `symbols`, ...) that `deep_filter` main still uses,
 #   so we keep the =0.21.4 pin and disable dep debug assertions instead. Our
 #   own crate keeps full debug assertions — test assertions are untouched.
+# NOTE: cargo ignores [profile.*] outside the workspace root — if this crate
+#   ever joins a cargo workspace, re-home this override there or dfn dev/test
+#   builds silently regress to the check_compact panic.
 [profile.dev.package."*"]
 opt-level = 3
 debug-assertions = false
