@@ -113,6 +113,7 @@ fn filter_core(
     out.fill(0.0);
 
     for k in 0..in_shift {
+        // Safe: k < in_shift <= STRIDE-1 = 3 < MEMORY_SIZE = 15, so MEMORY_SIZE + k - in_shift >= 0.
         let mut j = (MEMORY_SIZE + k - in_shift) as isize;
         for i in 0..FILTER_SIZE {
             out[k] += state[j as usize] * filter[i];
@@ -123,11 +124,13 @@ fn filter_core(
     let mut shift = 0usize;
     for k in in_shift..FILTER_SIZE * STRIDE {
         let loop_limit = FILTER_SIZE.min(1 + (shift >> STRIDE_LOG2));
+        // loop_limit guarantees j = shift - i*STRIDE >= 0 for all i in 0..loop_limit.
         let mut j = shift as isize;
         for i in 0..loop_limit {
             out[k] += input[j as usize] * filter[i];
             j -= STRIDE as isize;
         }
+        // Safe: shift >= (loop_limit-1)*STRIDE, so MEMORY_SIZE + shift - loop_limit*STRIDE >= MEMORY_SIZE - STRIDE = 11.
         let mut j = (MEMORY_SIZE + shift - loop_limit * STRIDE) as isize;
         for i in loop_limit..FILTER_SIZE {
             out[k] += state[j as usize] * filter[i];
@@ -187,6 +190,13 @@ impl ThreeBandFilterBank {
     ///
     /// `full` must be `FULL_FRAME` samples; `out_bands` must be `FULL_FRAME`
     /// long, laid out band-major: `[b0[0..160], b1[0..160], b2[0..160]]`.
+    ///
+    /// Slices are used (rather than fixed-size array refs) because FFI/mobile
+    /// callers pass runtime-length buffers whose sizes are unknown at compile time.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `full.len() != FULL_FRAME` (480) or `out_bands.len() != FULL_FRAME` (480).
     pub fn split(&mut self, full: &[f32], out_bands: &mut [f32]) {
         assert_eq!(full.len(), FULL_FRAME);
         assert_eq!(out_bands.len(), FULL_FRAME);
@@ -235,6 +245,13 @@ impl ThreeBandFilterBank {
     ///
     /// `bands` must be `FULL_FRAME` long, band-major (see `split`); `out`
     /// must be `FULL_FRAME` samples.
+    ///
+    /// Slices are used (rather than fixed-size array refs) because FFI/mobile
+    /// callers pass runtime-length buffers whose sizes are unknown at compile time.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `bands.len() != FULL_FRAME` (480) or `out.len() != FULL_FRAME` (480).
     pub fn merge(&mut self, bands: &[f32], out: &mut [f32]) {
         assert_eq!(bands.len(), FULL_FRAME);
         assert_eq!(out.len(), FULL_FRAME);
@@ -285,10 +302,11 @@ mod tests {
 
     /// split -> merge must reconstruct a sine within tolerance (the filterbank
     /// has inherent delay; compensate by cross-correlating for best lag).
+    /// Both directions are driven through the SAME instance to exercise the
+    /// documented guarantee that analysis and synthesis state don't collide.
     #[test]
     fn split_merge_reconstructs_sine() {
-        let mut fb_a = ThreeBandFilterBank::new();
-        let mut fb_s = ThreeBandFilterBank::new();
+        let mut fb = ThreeBandFilterBank::new();
         let n_frames = 50;
         let mut input = Vec::new();
         let mut output = Vec::new();
@@ -301,13 +319,14 @@ mod tests {
                 .collect();
             input.extend_from_slice(&full);
             let mut bands = [0.0f32; FULL_FRAME];
-            fb_s.split(&full, &mut bands);
+            fb.split(&full, &mut bands);
             let mut recon = [0.0f32; FULL_FRAME];
-            fb_a.merge(&bands, &mut recon);
+            fb.merge(&bands, &mut recon);
             output.extend_from_slice(&recon);
         }
         let mut best = (0usize, f32::MIN);
         for lag in 0..512 {
+            // 512: lag search window covers the filterbank's group delay headroom
             let corr: f32 = input[..input.len() - 512]
                 .iter()
                 .zip(&output[lag..])
@@ -326,12 +345,14 @@ mod tests {
         // on the residual; a faithful port scores ~59.8 dB, wrong coefficients tank it.
         let (mut cross, mut out_e) = (0.0f64, 0.0f64);
         for i in 4800..input.len() - 512 {
+            // 4800: skip first 100 ms of warm-up so transient state doesn't skew SNR
             cross += input[i] as f64 * output[i + lag] as f64;
             out_e += (output[i + lag] as f64).powi(2);
         }
         let g = cross / out_e.max(1e-12);
         let (mut sig, mut err) = (0.0f64, 0.0f64);
         for i in 4800..input.len() - 512 {
+            // 4800: same warm-up skip as above
             sig += (input[i] as f64).powi(2);
             err += (input[i] as f64 - g * output[i + lag] as f64).powi(2);
         }
@@ -347,30 +368,47 @@ mod tests {
         );
     }
 
-    /// Energy of a 12 kHz tone must land in band 1 (8-16 kHz), not band 0.
+    /// Energy of each tone must land in the expected band (not the others).
+    /// Probes all three bands: 4 kHz → band 0 (0–8 kHz),
+    /// 12 kHz → band 1 (8–16 kHz), 20 kHz → band 2 (16–24 kHz).
+    /// A fresh filterbank is used per tone so energies don't bleed across probes.
     #[test]
     fn split_routes_energy_to_correct_band() {
-        let mut fb = ThreeBandFilterBank::new();
-        let mut bands = [0.0f32; FULL_FRAME];
-        let mut e = [0.0f32; NUM_BANDS];
-        for f in 0..20 {
-            let full: Vec<f32> = (0..FULL_FRAME)
-                .map(|i| {
-                    let t = (f * FULL_FRAME + i) as f32 / 48_000.0;
-                    (2.0 * std::f32::consts::PI * 12_000.0 * t).sin()
-                })
-                .collect();
-            fb.split(&full, &mut bands);
-            for b in 0..NUM_BANDS {
-                e[b] += bands[b * BAND_FRAME..(b + 1) * BAND_FRAME]
-                    .iter()
-                    .map(|x| x * x)
-                    .sum::<f32>();
+        let probes: &[(f32, usize)] = &[
+            (4_000.0, 0),
+            (12_000.0, 1),
+            (20_000.0, 2),
+        ];
+
+        for &(freq, expected_band) in probes {
+            // Fresh instance per tone — no cross-probe state bleed.
+            let mut fb = ThreeBandFilterBank::new();
+            let mut e = [0.0f32; NUM_BANDS];
+            let mut bands = [0.0f32; FULL_FRAME];
+            for f in 0..20 {
+                let full: Vec<f32> = (0..FULL_FRAME)
+                    .map(|i| {
+                        let t = (f * FULL_FRAME + i) as f32 / 48_000.0;
+                        (2.0 * std::f32::consts::PI * freq * t).sin()
+                    })
+                    .collect();
+                fb.split(&full, &mut bands);
+                for b in 0..NUM_BANDS {
+                    e[b] += bands[b * BAND_FRAME..(b + 1) * BAND_FRAME]
+                        .iter()
+                        .map(|x| x * x)
+                        .sum::<f32>();
+                }
+            }
+            for other in 0..NUM_BANDS {
+                if other == expected_band {
+                    continue;
+                }
+                assert!(
+                    e[expected_band] > 10.0 * e[other],
+                    "{freq} Hz: expected band {expected_band} to dominate band {other} by 10x, got {e:?}"
+                );
             }
         }
-        assert!(
-            e[1] > 10.0 * e[0] && e[1] > 10.0 * e[2],
-            "12kHz energy should dominate band 1: {e:?}"
-        );
     }
 }
