@@ -1,0 +1,55 @@
+# Artifact builds for the mobile adapters. Host tests run on every MR;
+# artifact jobs are manual until the runners get NDK/Xcode provisioned.
+stages: [test, build]
+
+rust-tests:
+  stage: test
+  # rust:1.85 used instead of 1.79 — some transitive deps in Cargo.lock require
+  # features stabilised in the 1.80-1.85 window (e.g. edition-2024 crates).
+  image: rust:1.85
+  variables:
+    CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+  cache:
+    key: rust-core
+    paths:
+      - rust-core/target/
+      - .cargo/
+  script:
+    - cd rust-core
+    - cargo test --features ffi
+    - cargo test --features ffi,dfn
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+
+android-aar:
+  stage: build
+  # ghcr.io/cirruslabs/android-sdk:35-ndk ships JDK 17, Gradle, SDK 35, and NDK.
+  image: ghcr.io/cirruslabs/android-sdk:35-ndk
+  before_script:
+    - curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+    - source "$HOME/.cargo/env"
+    - rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+    - cargo install cargo-ndk
+  script:
+    - ./scripts/build-android.sh
+    - cd android && gradle --no-daemon testDebugUnitTest
+  artifacts:
+    paths:
+      - android/build/outputs/aar/
+  rules:
+    - when: manual
+
+ios-xcframework:
+  stage: build
+  tags: [macos]            # requires a macOS runner with Xcode
+  script:
+    - rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+    - ./scripts/gen-header.sh
+    - ./scripts/build-ios.sh
+    - cd ios && swift test
+  artifacts:
+    paths:
+      - ios/Frameworks/DenoiseVoiceCoreFFI.xcframework
+  rules:
+    - when: manual
