@@ -44,15 +44,16 @@ denoiseVoiceClarity/
       worklet/voiceClarity.worklet.ts  # AudioWorkletProcessor → WASM
       loader.ts        # dynamic import of the WASM bundle (bundle-budget safe)
   android/             # Gradle library module → AAR (LiveKit Android 2.18.2)
-    build.gradle
+    build.gradle.kts
     src/main/
-      kotlin/.../VoiceClarityAudioProcessor.kt  # implements AudioProcessorInterface via JNI
+      java/com/gruner/voiceclarity/VoiceClarityAudioProcessor.kt  # implements AudioProcessorInterface via JNI
       jniLibs/         # .so files for arm64-v8a / armeabi-v7a / x86_64 (gitignored; built by script)
   ios/                 # Swift Package: DenoiseVoiceClarity (LiveKit Swift SDK 2.15.0)
     Package.swift
     Sources/
       VoiceClarity/VoiceClarityProcessor.swift  # implements AudioCustomProcessingDelegate
-      DenoiseVoiceCoreFFI/                      # binary xcframework + cbindgen header (gitignored)
+      DenoiseVoiceCoreFFI/include/              # cbindgen header + modulemap (committed)
+    Frameworks/        # DenoiseVoiceCoreFFI.xcframework (gitignored; built by script)
   scripts/
     build-wasm.sh      # wasm-pack build → web/wasm/
     gen-header.sh      # cbindgen → ios/Sources/DenoiseVoiceCoreFFI/include/ header
@@ -104,7 +105,7 @@ targets `aarch64-linux-android`, `armv7-linux-androideabi`, `x86_64-linux-androi
 
 ```bash
 ./scripts/build-android.sh   # cargo-ndk → android/src/main/jniLibs/ → gradle assembleRelease
-# Output: android/build/outputs/aar/android-release.aar
+# Output: android/build/outputs/aar/voiceclarity-release.aar
 ```
 
 CI manual job `android-aar` produces the artifact without a local NDK — trigger
@@ -118,7 +119,7 @@ targets `aarch64-apple-ios`, `aarch64-apple-ios-sim`, `x86_64-apple-ios`.
 ```bash
 ./scripts/gen-header.sh      # cbindgen → ios/Sources/DenoiseVoiceCoreFFI/include/
 ./scripts/build-ios.sh       # cargo iOS targets → lipo → xcodebuild -create-xcframework
-# Output: ios/DenoiseVoiceCoreFFI.xcframework  (then consumed by Package.swift)
+# Output: ios/Frameworks/DenoiseVoiceCoreFFI.xcframework  (then consumed by Package.swift)
 ```
 
 CI manual job `ios-xcframework` produces the artifact — trigger from the
@@ -152,7 +153,7 @@ import io.livekit.android.LiveKit
 import io.livekit.android.LiveKitOverrides
 import io.livekit.android.audio.AudioOptions
 import io.livekit.android.audio.AudioProcessorOptions
-import com.gruner.denoise.VoiceClarityAudioProcessor
+import com.gruner.voiceclarity.VoiceClarityAudioProcessor
 
 val processor = VoiceClarityAudioProcessor()
 processor.setEnabled(true)
@@ -194,7 +195,7 @@ import LiveKit
 import VoiceClarity
 
 let processor = VoiceClarityProcessor()
-processor.setEnabled(true)
+processor.isUserEnabled = true
 processor.setAttenuationLimitDb(20)    // optional
 
 AudioManager.shared.capturePostProcessingDelegate = processor

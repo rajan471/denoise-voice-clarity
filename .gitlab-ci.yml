@@ -16,6 +16,7 @@ rust-tests:
       - .cargo/
   script:
     - cd rust-core
+    - cargo test                      # default features (covers the not(dfn) cfg tests)
     - cargo test --features ffi
     - cargo test --features ffi,dfn
   rules:
@@ -45,6 +46,7 @@ ios-xcframework:
   tags: [macos]            # requires a macOS runner with Xcode
   script:
     - rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+    - command -v cbindgen >/dev/null || cargo install cbindgen
     - ./scripts/gen-header.sh
     - ./scripts/build-ios.sh
     - cd ios && swift test
