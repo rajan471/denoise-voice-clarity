@@ -296,9 +296,181 @@ impl ThreeBandFilterBank {
     }
 }
 
+use crate::clarity::{ClarityChain, ClarityConfig};
+use crate::{Config, VoiceClarity, FRAME_SIZE, SAMPLE_RATE};
+
+/// Wraps `VoiceClarity` for WebRTC's banded capture-post buffers and owns the
+/// rate policy: full chain (DFN denoiser + clarity) at 48 kHz; clarity-only at
+/// any other sample rate. WebRTC's capture-post processor hands audio in the
+/// split domain — at 48 kHz that's 3 bands x 160 frames (band-major), so this
+/// type merges to full-band, runs the chain, and splits back. Any other shape
+/// is treated as clarity-only on band 0 (the voice band).
+///
+/// This is the seam the C FFI wraps; one instance per audio stream, owned by
+/// a single audio thread.
+pub struct BandedVoiceClarity {
+    config: Config,
+    sample_rate: u32,
+    /// Full chain — present only when initialised at 48 kHz.
+    full: Option<VoiceClarity>,
+    /// Clarity-only chain at the native rate — present off 48 kHz.
+    clarity_only: Option<ClarityChain>,
+    merge_fb: ThreeBandFilterBank,
+    split_fb: ThreeBandFilterBank,
+    // Scratch full-band buffer so process_banded never allocates.
+    scratch: [f32; FRAME_SIZE],
+    enabled: bool,
+}
+
+impl BandedVoiceClarity {
+    /// Create an instance from `config`. Call `init` before processing to
+    /// bind it to a sample rate; until then it defaults to 48 kHz with no
+    /// chain built.
+    pub fn new(config: Config) -> Self {
+        Self {
+            enabled: config.enabled,
+            config,
+            sample_rate: SAMPLE_RATE,
+            full: None,
+            clarity_only: None,
+            merge_fb: ThreeBandFilterBank::new(),
+            split_fb: ThreeBandFilterBank::new(),
+            scratch: [0.0; FRAME_SIZE],
+        }
+    }
+
+    /// Bind to a sample rate (rate policy lives here): 48 kHz builds the full
+    /// DFN + clarity chain; any other rate builds a clarity-only chain at the
+    /// native rate. Fresh filterbank state in both cases. Mono only — the
+    /// banded buffer is a single channel; `channels == 0` is an error.
+    pub fn init(&mut self, sample_rate: u32, channels: u32) -> Result<(), &'static str> {
+        if channels == 0 {
+            return Err("channels must be >= 1");
+        }
+        self.sample_rate = sample_rate;
+        if sample_rate == SAMPLE_RATE {
+            self.full = Some(VoiceClarity::new(self.config.clone()));
+            self.clarity_only = None;
+        } else {
+            self.full = None;
+            self.clarity_only = Some(ClarityChain::new(
+                sample_rate as f32,
+                self.config.clarity.clone(),
+            ));
+        }
+        self.merge_fb = ThreeBandFilterBank::new();
+        self.split_fb = ThreeBandFilterBank::new();
+        self.scratch = [0.0; FRAME_SIZE];
+        Ok(())
+    }
+
+    /// Re-initialise for `new_rate`, dropping all DSP state (stream restart /
+    /// rate change).
+    pub fn reset(&mut self, new_rate: u32) -> Result<(), &'static str> {
+        self.init(new_rate, 1)
+    }
+
+    /// True when the full chain (with the DFN denoiser) is live, i.e. the
+    /// instance was initialised at 48 kHz.
+    pub fn dfn_active(&self) -> bool {
+        self.full.is_some()
+    }
+
+    /// Master enable. When off, `process_banded` is a no-op passthrough.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        self.config.enabled = enabled;
+        if let Some(full) = &mut self.full {
+            full.set_enabled(enabled);
+        }
+    }
+
+    /// Forward the denoiser attenuation limit (dB). Stored so a later `init`
+    /// rebuilds with it; no-op for the clarity-only chain (no denoiser there).
+    pub fn set_attenuation_limit_db(&mut self, db: f32) {
+        self.config.attenuation_limit_db = db;
+        if let Some(full) = &mut self.full {
+            full.set_attenuation_limit_db(db);
+        }
+    }
+
+    /// Forward clarity settings to whichever chain is live, and store them so
+    /// a later `init` rebuilds with them.
+    pub fn set_clarity(&mut self, cfg: ClarityConfig) {
+        self.config.clarity = cfg.clone();
+        if let Some(full) = &mut self.full {
+            full.set_clarity(cfg);
+        } else if let Some(clarity) = &mut self.clarity_only {
+            clarity.set_config(cfg);
+        }
+    }
+
+    /// Process one 10 ms banded buffer in place. `buf` is band-major:
+    /// `bands` x `frames_per_band` samples.
+    ///
+    /// - Disabled: returns `Ok` leaving `buf` untouched.
+    /// - `buf.len() != bands * frames_per_band`: `Err` (shape mismatch).
+    /// - 3 x `BAND_FRAME` with the full chain live (48 kHz): merge to
+    ///   full-band, run the full chain, split back.
+    /// - 1 x `FRAME_SIZE` with the full chain live: run the full chain
+    ///   directly (host gave us full-band already).
+    /// - Anything else: clarity-only on band 0; upper bands pass untouched.
+    pub fn process_banded(
+        &mut self,
+        bands: usize,
+        frames_per_band: usize,
+        buf: &mut [f32],
+    ) -> Result<(), &'static str> {
+        if buf.len() != bands * frames_per_band {
+            return Err("buffer length != bands * frames_per_band");
+        }
+        if !self.enabled {
+            return Ok(());
+        }
+
+        // Split borrows so merge/split filterbanks, scratch, and the chain can
+        // be used together without tripping the borrow checker.
+        let Self {
+            full,
+            clarity_only,
+            merge_fb,
+            split_fb,
+            scratch,
+            sample_rate,
+            config,
+            ..
+        } = self;
+
+        match full {
+            Some(chain) if bands == NUM_BANDS && frames_per_band == BAND_FRAME => {
+                merge_fb.merge(buf, scratch);
+                chain.process(scratch);
+                split_fb.split(scratch, buf);
+                Ok(())
+            }
+            Some(chain) if bands == 1 && frames_per_band == FRAME_SIZE => {
+                chain.process(buf);
+                Ok(())
+            }
+            _ => {
+                // Unexpected shape (or non-48 kHz rate): clarity-only on the
+                // lowest band; upper bands (if any) pass through untouched.
+                // Lazy build allocates once on the first such frame only —
+                // acceptable, every later frame is allocation-free.
+                let clarity = clarity_only.get_or_insert_with(|| {
+                    ClarityChain::new(*sample_rate as f32, config.clarity.clone())
+                });
+                clarity.process(&mut buf[..frames_per_band]);
+                Ok(())
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Config;
 
     /// split -> merge must reconstruct a sine within tolerance (the filterbank
     /// has inherent delay; compensate by cross-correlating for best lag).
@@ -410,5 +582,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn banded_48k_3band_processes() {
+        let mut p = super::BandedVoiceClarity::new(Config::default());
+        assert!(p.init(48_000, 1).is_ok());
+        let mut buf = [0.1f32; FULL_FRAME]; // 3 bands x 160, band-major
+        assert_eq!(p.process_banded(3, BAND_FRAME, &mut buf), Ok(()));
+    }
+
+    #[test]
+    fn banded_16k_single_band_is_clarity_only() {
+        let mut p = super::BandedVoiceClarity::new(Config::default());
+        assert!(p.init(16_000, 1).is_ok());
+        let mut buf = [0.1f32; 160]; // 10ms @ 16k, 1 band
+        assert_eq!(p.process_banded(1, 160, &mut buf), Ok(()));
+        assert!(p.dfn_active() == false, "DFN must be bypassed off 48k");
+    }
+
+    #[test]
+    fn banded_rejects_shape_mismatch() {
+        let mut p = super::BandedVoiceClarity::new(Config::default());
+        assert!(p.init(48_000, 1).is_ok());
+        let mut buf = [0.0f32; 100];
+        assert!(p.process_banded(3, 100, &mut buf).is_err());
     }
 }
