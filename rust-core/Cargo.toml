@@ -49,3 +49,16 @@ getrandom = { version = "0.2", features = ["js"] }
 opt-level = 3
 lto = true
 codegen-units = 1
+
+# Dependencies must be optimized even in dev/test builds:
+# - unoptimized tract is nowhere near real-time for the DFN model, and
+# - tract-core's debug_assertions-only graph checker (`check_compact`) trips on
+#   a benign duplicate *node name* (node ids stay unique) that DFN3's erb_dec
+#   hits during codegen on this host. Upstream never sees it because tract is
+#   always run in release; the tract versions that fix it (>=0.21.6) renamed
+#   APIs (`symbol_table` -> `symbols`, ...) that `deep_filter` main still uses,
+#   so we keep the =0.21.4 pin and disable dep debug assertions instead. Our
+#   own crate keeps full debug assertions — test assertions are untouched.
+[profile.dev.package."*"]
+opt-level = 3
+debug-assertions = false
