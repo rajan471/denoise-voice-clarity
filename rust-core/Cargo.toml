@@ -23,11 +23,14 @@ dfn = [
 ]
 # C ABI for the mobile adapters (iOS direct; Android via jni.rs).
 ffi = []
+# JNI exports for the Android adapter (com.gruner.voiceclarity.NativeCore).
+android = ["ffi", "dep:jni"]
 # wasm-bindgen bindings for the web target.
 wasm = ["dep:wasm-bindgen"]
 
 [dependencies]
 wasm-bindgen = { version = "0.2", optional = true }
+jni = { version = "0.21", optional = true }
 # DeepFilterNet. Git-pinned to the upstream repo so we get the `tract` inference
 # API + `default-model` (bundles the model weights into the binary — no external
 # file needed). default-features off so we don't pull dataset/codec deps.

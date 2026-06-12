@@ -13,6 +13,8 @@ pub mod clarity;
 pub mod engine;
 #[cfg(feature = "ffi")]
 pub mod ffi;
+#[cfg(feature = "android")]
+pub mod jni;
 pub mod vad;
 
 #[cfg(feature = "wasm")]
