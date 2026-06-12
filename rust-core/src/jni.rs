@@ -76,9 +76,14 @@ pub extern "system" fn Java_com_gruner_voiceclarity_NativeCore_processBanded(
     let Ok(cap) = env.get_direct_buffer_capacity(&buf) else {
         return -4;
     };
-    let needed = (bands as usize) * (frames_per_band as usize) * core::mem::size_of::<f32>();
-    if cap < needed {
-        return -5;
+    // checked_mul: on 32-bit ABIs (armeabi-v7a) huge shapes could wrap the
+    // product and silently bypass the capacity guard.
+    let needed = (bands as usize)
+        .checked_mul(frames_per_band as usize)
+        .and_then(|n| n.checked_mul(core::mem::size_of::<f32>()));
+    match needed {
+        Some(needed) if cap >= needed => {}
+        _ => return -5,
     }
     unsafe { dvc_process_banded(h as *mut DvcHandle, bands, frames_per_band, addr as *mut f32) }
 }
