@@ -11,6 +11,8 @@
 pub mod bands;
 pub mod clarity;
 pub mod engine;
+#[cfg(feature = "ffi")]
+pub mod ffi;
 pub mod vad;
 
 #[cfg(feature = "wasm")]

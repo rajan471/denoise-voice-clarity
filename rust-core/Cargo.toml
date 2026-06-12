@@ -6,8 +6,8 @@ description = "Client-side noise suppression + voice clarity chain for LiveKit (
 license = "MIT OR Apache-2.0"
 
 [lib]
-# rlib for native/JNI/Swift linking; cdylib for the WASM target.
-crate-type = ["cdylib", "rlib"]
+# rlib for native/JNI/Swift linking; cdylib for WASM/Android; staticlib for iOS.
+crate-type = ["cdylib", "rlib", "staticlib"]
 
 [features]
 # Default builds the passthrough reference engine + the full clarity chain.
@@ -21,6 +21,8 @@ dfn = [
   "dep:tract-core", "dep:tract-onnx", "dep:tract-pulse",
   "dep:tract-hir", "dep:tract-nnef", "dep:tract-linalg",
 ]
+# C ABI for the mobile adapters (iOS direct; Android via jni.rs).
+ffi = []
 # wasm-bindgen bindings for the web target.
 wasm = ["dep:wasm-bindgen"]
 
