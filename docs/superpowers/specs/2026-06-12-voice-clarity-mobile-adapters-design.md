@@ -208,3 +208,46 @@ The adapters expose `setEnabled`, `setAttenuationLimitDb`, `setClarityEnabled`.
 4. Amend `DESIGN.md` (§2 non-goals, §10 rollout) to point here.
 5. Mobile teams integrate the AAR / Swift Package behind their own toggle and
    run the device A/B before enabling by default.
+
+## Amendments (2026-06-12, post-implementation)
+
+The following findings emerged during implementation and supersede the
+corresponding statements in the spec above.
+
+**1. Android receives full-band audio, not split-band.**
+The spec (§2 "Band-split reality") stated that both Android and iOS receive
+APM split-band data (3 × 160 frames-per-band @ 48 kHz) and that the adapter
+must merge→process→re-split. This is **correct for iOS only**. Verified against
+webrtc-sdk m125 source (the exact fork livekit-android 2.18.2 ships):
+`external_audio_processor.cc` invokes the capture post-processor with
+`audio->channels()[0]` after `MergeFrequencyBands` has already reconstructed
+the full-band signal; `numFrames` is the total sample count (e.g. 480 @ 48 kHz)
+and `numBands` is informational. The Kotlin `VoiceClarityAudioProcessor` adapter
+therefore forwards `bands = 1` to `dvc_process_banded`; the core's
+merge→process→split path is a no-op for this case. The §2 "Band-split reality"
+paragraph and the §3 architecture diagram apply to **iOS only**.
+
+**2. `setClarityEnabled` dropped from the adapter public surface.**
+The spec (§3.4) listed `setClarityEnabled` as one of three exposed setters. It
+was dropped during implementation. The core has no clarity-bypass toggle: v1
+keeps the clarity chain always-on as part of the DFN→clarity pipeline (YAGNI;
+revisit if A/B tuning requires a per-stage bypass). The adapters expose two
+setters only: `setEnabled` (master on/off + health gate) and
+`setAttenuationLimitDb`.
+
+**3. Filterbank test metric is gain-compensated SNR, not raw SNR.**
+The spec (§6) referenced the filterbank perfect-reconstruction SNR bound
+"WebRTC's own tests use." In practice, WebRTC's 3-band QMF filterbank is
+non-perfect-reconstruction by design (~0.36 dB passband droop); raw round-trip
+SNR hits a ceiling of ~27.9 dB (verified against compiled upstream). The
+implemented test therefore uses **gain-compensated SNR > 50 dB** (measured
+~59.8 dB): the reconstructed signal is amplitude-normalised to the input before
+computing the residual, which isolates phase/shape distortion from the
+known-and-acceptable gain droop. This is the correct metric for a split-band
+adapter whose job is shape fidelity, not gain calibration.
+
+---
+
+*Note: the monorepo copy of this spec at
+`services/docs/superpowers/specs/2026-06-12-voice-clarity-mobile-adapters-design.md`
+must be re-synced when this branch merges — it lives outside this repo.*
