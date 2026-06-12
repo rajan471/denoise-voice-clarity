@@ -589,7 +589,9 @@ mod tests {
         let mut p = super::BandedVoiceClarity::new(Config::default());
         assert!(p.init(48_000, 1).is_ok());
         let mut buf = [0.1f32; FULL_FRAME]; // 3 bands x 160, band-major
+        let original = buf;
         assert_eq!(p.process_banded(3, BAND_FRAME, &mut buf), Ok(()));
+        assert!(buf != original, "enabled 48k path must actually process audio");
     }
 
     #[test]
@@ -598,7 +600,7 @@ mod tests {
         assert!(p.init(16_000, 1).is_ok());
         let mut buf = [0.1f32; 160]; // 10ms @ 16k, 1 band
         assert_eq!(p.process_banded(1, 160, &mut buf), Ok(()));
-        assert!(p.dfn_active() == false, "DFN must be bypassed off 48k");
+        assert!(!p.dfn_active(), "DFN must be bypassed off 48k");
     }
 
     #[test]
