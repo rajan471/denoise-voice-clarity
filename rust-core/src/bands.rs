@@ -1,6 +1,6 @@
 //! Port of WebRTC's three-band filterbank (modules/audio_processing/
 //! splitting_filter / three_band_filter_bank). BSD-3-Clause upstream;
-//! attribution in NOTICE. 48 kHz <-> 3 x 16 kHz bands, 480 <-> 3x160 samples.
+//! attribution below. 48 kHz <-> 3 x 16 kHz bands, 480 <-> 3x160 samples.
 //!
 //! Ported from:
 //!   https://webrtc.googlesource.com/src/+/refs/branch-heads/6478/modules/audio_processing/three_band_filter_bank.cc
