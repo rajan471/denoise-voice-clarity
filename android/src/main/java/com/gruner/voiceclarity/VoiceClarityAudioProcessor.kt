@@ -48,19 +48,38 @@ class VoiceClarityAudioProcessor internal constructor(
     @Volatile private var handle: Long = 0
     @Volatile private var userEnabled = true
     @Volatile private var healthy = false
+    private var attenuationLimitDb: Float? = null
     private val consecutiveErrors = AtomicInteger(0)
 
+    // Guards every native call against destroy-while-processing (use-after-free).
+    // Uncontended in steady state, so it is ~free on the audio path; contention
+    // only happens during teardown, which is exactly when we need exclusion.
+    private val lock = Any()
+
     fun setEnabled(enabled: Boolean) {
-        userEnabled = enabled
-        if (handle != 0L) bridge.setEnabled(handle, enabled)
+        synchronized(lock) {
+            userEnabled = enabled
+            if (handle != 0L) bridge.setEnabled(handle, enabled)
+        }
     }
 
     fun setAttenuationLimitDb(db: Float) {
-        if (handle != 0L) bridge.setAttenuationLimitDb(handle, db)
+        synchronized(lock) {
+            attenuationLimitDb = db
+            if (handle != 0L) bridge.setAttenuationLimitDb(handle, db)
+        }
     }
 
+    /**
+     * Destroys the native processor. Call only after the processor is detached
+     * from AudioProcessorOptions / capture is stopped. Must not race
+     * [processAudio]; the internal lock makes a late audio callback a safe
+     * no-op, but detaching first is the contract.
+     */
     fun release() {
-        if (handle != 0L) { bridge.destroy(handle); handle = 0; healthy = false }
+        synchronized(lock) {
+            if (handle != 0L) { bridge.destroy(handle); handle = 0; healthy = false }
+        }
     }
 
     // -- AudioProcessorInterface ------------------------------------------
@@ -70,18 +89,36 @@ class VoiceClarityAudioProcessor internal constructor(
     override fun getName(): String = "denoise-voice-clarity"
 
     override fun initializeAudioProcessing(sampleRateHz: Int, numChannels: Int) {
-        if (!bridge.available) { healthy = false; return }
-        if (handle == 0L) handle = bridge.create()
-        healthy = handle != 0L && bridge.init(handle, sampleRateHz, numChannels) == 0
-        consecutiveErrors.set(0)
+        synchronized(lock) {
+            if (!bridge.available) { healthy = false; return }
+            if (handle == 0L) handle = bridge.create()
+            healthy = handle != 0L && bridge.init(handle, sampleRateHz, numChannels) == 0
+            consecutiveErrors.set(0)
+            if (healthy) {
+                // Re-apply settings made before (re-)init so they aren't dropped.
+                bridge.setEnabled(handle, userEnabled)
+                attenuationLimitDb?.let { bridge.setAttenuationLimitDb(handle, it) }
+            }
+        }
     }
 
     override fun resetAudioProcessing(newRate: Int) {
-        if (handle != 0L) { bridge.reset(handle, newRate); consecutiveErrors.set(0) }
+        synchronized(lock) {
+            if (handle != 0L) { bridge.reset(handle, newRate); consecutiveErrors.set(0) }
+        }
     }
 
     override fun processAudio(numBands: Int, numFrames: Int, buffer: ByteBuffer) {
         if (!isEnabled() || numFrames <= 0) return
+        synchronized(lock) {
+            // Re-check under the lock: release() may have destroyed the handle
+            // between the isEnabled() fast-path check and here.
+            if (handle == 0L || !isEnabled()) return
+            processLocked(numFrames, buffer)
+        }
+    }
+
+    private fun processLocked(numFrames: Int, buffer: ByteBuffer) {
         // Buffer convention (verified against webrtc-sdk/webrtc m125_release and
         // m144_release, sdk/android/src/jni/pc/external_audio_processor.cc —
         // m125 is what livekit-android 2.18.2 ships via

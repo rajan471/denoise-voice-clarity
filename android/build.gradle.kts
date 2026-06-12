@@ -7,13 +7,21 @@ plugins {
 android {
     namespace = "com.gruner.voiceclarity"
     compileSdk = 35
-    defaultConfig { minSdk = 24 }
+    defaultConfig {
+        minSdk = 24
+        consumerProguardFiles("consumer-rules.pro")
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
+    // AGP 8.x does not create a publishable component unless asked.
+    publishing {
+        singleVariant("release")
+    }
 }
+
+kotlin { jvmToolchain(17) }
 
 dependencies {
     // The app supplies its own LiveKit SDK; we only compile against it.
@@ -35,7 +43,10 @@ publishing {
     }
     repositories {
         maven {
-            url = uri(System.getenv("GITLAB_MAVEN_URL") ?: "$buildDir/repo")
+            url = uri(
+                System.getenv("GITLAB_MAVEN_URL")
+                    ?: layout.buildDirectory.dir("repo").get().toString(),
+            )
             credentials(HttpHeaderCredentials::class) {
                 name = "Job-Token"
                 value = System.getenv("CI_JOB_TOKEN") ?: ""

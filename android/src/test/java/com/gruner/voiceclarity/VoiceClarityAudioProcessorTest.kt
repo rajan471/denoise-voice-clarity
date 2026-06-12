@@ -11,6 +11,7 @@ private open class FakeBridge(var processResult: Int = 0) : VoiceClarityAudioPro
     var inited = 0
     var resets = 0
     var destroyed = 0
+    var processCalls = 0
     var lastBands = -1
     var lastFramesPerBand = -1
     override val available get() = true
@@ -19,6 +20,7 @@ private open class FakeBridge(var processResult: Int = 0) : VoiceClarityAudioPro
     override fun init(handle: Long, sampleRateHz: Int, channels: Int): Int { inited++; return 0 }
     override fun reset(handle: Long, newRateHz: Int): Int { resets++; return 0 }
     override fun processBanded(handle: Long, bands: Int, framesPerBand: Int, buffer: ByteBuffer): Int {
+        processCalls++
         lastBands = bands
         lastFramesPerBand = framesPerBand
         return processResult
@@ -85,5 +87,18 @@ class VoiceClarityAudioProcessorTest {
         bridge.processResult = -2
         repeat(49) { p.processAudio(3, 480, directBuf(480)) }
         assertTrue(p.isEnabled()) // 49 < 50 again
+    }
+
+    @Test fun `release destroys handle and later processAudio is a safe no-op`() {
+        val bridge = FakeBridge()
+        val p = VoiceClarityAudioProcessor(bridge)
+        p.initializeAudioProcessing(48_000, 1)
+        assertTrue(p.isEnabled())
+        p.release()
+        assertEquals(1, bridge.destroyed)
+        assertFalse(p.isEnabled())
+        val callsBefore = bridge.processCalls
+        p.processAudio(3, 480, directBuf(480)) // must not throw...
+        assertEquals(callsBefore, bridge.processCalls) // ...and must not hit the bridge
     }
 }

@@ -17,6 +17,9 @@ use ::jni::objects::{JByteBuffer, JClass};
 use ::jni::sys::{jboolean, jfloat, jint, jlong};
 use ::jni::JNIEnv;
 
+// Note: the second JNI arg is declared `JClass`, but Kotlin binds these as
+// instance methods on the NativeCore singleton (receiver jobject) — ABI-identical
+// opaque pointer, value unused, intentional.
 #[no_mangle]
 pub extern "system" fn Java_com_gruner_voiceclarity_NativeCore_create(
     _env: JNIEnv,
