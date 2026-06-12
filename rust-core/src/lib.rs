@@ -10,6 +10,7 @@
 
 pub mod clarity;
 pub mod engine;
+pub mod bands;
 pub mod vad;
 
 #[cfg(feature = "wasm")]
