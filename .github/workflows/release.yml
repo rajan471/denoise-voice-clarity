@@ -1,0 +1,112 @@
+name: release
+
+# Publishes the mobile artifacts as GitHub Release assets on a version tag.
+# Tag MUST be the bare semver (e.g. `0.1.0`, not `v0.1.0`) so the asset name
+# `voiceclarity-<tag>.aar` matches the Gradle ivy-repo pattern consumers use
+# (see README "Consuming from GitHub Releases").
+#
+# Note: this repo also contains .gitlab-ci.yml for the internal GitLab mirror;
+# that file is inert on GitHub. This workflow is the GitHub-side publisher.
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write   # required to create the Release and upload assets
+
+jobs:
+  android-aar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-core
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK + NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: |
+          sdkmanager "ndk;26.3.11579264"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.3.11579264" >> "$GITHUB_ENV"
+
+      - name: Provision Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build .so libs + AAR
+        run: ./scripts/build-android.sh   # cargo-ndk (release, dfn,ffi,android) -> jniLibs -> gradle assembleRelease
+
+      - name: Stage release artifact
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          src="android/build/outputs/aar/voiceclarity-release.aar"
+          out="voiceclarity-${VERSION}.aar"
+          cp "$src" "$out"
+          sha256sum "$out" > "$out.sha256"
+          ls -l "$out" "$out.sha256"
+
+      - name: Upload AAR to the Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            voiceclarity-*.aar
+            voiceclarity-*.aar.sha256
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+
+  ios-xcframework:
+    runs-on: macos-14   # Apple Silicon, Xcode preinstalled
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-core
+
+      - name: Install cbindgen
+        run: cargo install cbindgen --locked
+
+      - name: Build XCFramework
+        run: ./scripts/build-ios.sh   # gen-header + cargo iOS targets + lipo + xcodebuild -create-xcframework
+
+      - name: Zip + checksum
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          ( cd ios/Frameworks && zip -ry "../../DenoiseVoiceCoreFFI-${VERSION}.xcframework.zip" DenoiseVoiceCoreFFI.xcframework )
+          # SwiftPM consumers need this exact checksum in their remote binaryTarget.
+          swift package compute-checksum "DenoiseVoiceCoreFFI-${VERSION}.xcframework.zip" \
+            | tee "DenoiseVoiceCoreFFI-${VERSION}.xcframework.zip.sha256"
+
+      - name: Upload XCFramework to the Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            DenoiseVoiceCoreFFI-*.xcframework.zip
+            DenoiseVoiceCoreFFI-*.xcframework.zip.sha256
+          fail_on_unmatched_files: true

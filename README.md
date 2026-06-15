@@ -144,9 +144,9 @@ See `DESIGN.md` §5 for the exact seam (`realLivekitAdapter.ts:231`).
 
 ### Android
 
-Add the AAR as a file dependency (or publish to the GitLab package registry
-and use a Maven coordinate — publishing config is included in `android/`).
-Attach before connecting to the room:
+Pull the AAR from the GitHub Release (see "Consuming from GitHub Releases"
+below), add it as a file dependency, or publish to a Maven registry — publishing
+config is included in `android/`. Attach before connecting to the room:
 
 ```kotlin
 import io.livekit.android.LiveKit
@@ -212,3 +212,69 @@ and stop capture before releasing the processor.
 
 **Degradation:** same rules as Android — init failure leaves the processor
 inert; 50 consecutive errors trigger self-disable with one log line.
+
+## Publishing & consuming via GitHub Releases
+
+Releases are public, so any project can consume these artifacts. Pushing a
+**bare-semver tag** (e.g. `0.1.0`, *not* `v0.1.0`) triggers
+`.github/workflows/release.yml`, which builds and attaches:
+
+- `voiceclarity-<version>.aar` (+ `.sha256`) — Android, all three ABIs bundled
+- `DenoiseVoiceCoreFFI-<version>.xcframework.zip` (+ `.sha256`) — iOS
+
+```bash
+git tag 0.1.0 && git push origin 0.1.0   # CI builds + publishes the Release
+```
+
+The Android build needs the NDK and the iOS build needs Xcode; both are
+provided by the GitHub-hosted runners in the workflow, so no local toolchain is
+required to cut a release.
+
+### Android — resolve the release asset as a Gradle dependency
+
+A Release asset is a plain file URL, not a Maven repo, so a bare
+`implementation("…")` coordinate won't find it. Gradle's **ivy repository with a
+custom pattern** maps the coordinate onto the Release download URL — and it
+works cleanly here precisely because this AAR has **no transitive
+dependencies** (the `.so`s are bundled inside it and LiveKit is the app's own
+`compileOnly`/`implementation`), so the missing POM doesn't matter.
+
+In the consuming app's `settings.gradle.kts` (or `build.gradle.kts`):
+
+```kotlin
+repositories {
+    ivy {
+        url = uri("https://github.com/rajan471/denoise-voice-clarity/releases/download")
+        patterns { artifact("[revision]/[artifact]-[revision].[ext]") }
+        metadataSources { artifact() }              // no POM/metadata — trust the artifact
+        content { includeModule("com.gruner", "voiceclarity") }
+    }
+}
+```
+```kotlin
+dependencies {
+    implementation("com.gruner:voiceclarity:0.1.0@aar")   // -> releases/download/0.1.0/voiceclarity-0.1.0.aar
+    implementation("io.livekit:livekit-android:2.18.2")    // the app provides its own LiveKit
+}
+```
+
+Simpler fallback (no resolution magic): download `voiceclarity-0.1.0.aar` into
+`app/libs/` and use `implementation(files("libs/voiceclarity-0.1.0.aar"))`.
+
+### iOS — remote binary target from the release asset
+
+Host the package on a git repo/tag and point the binary target at the Release
+zip. The checksum is printed by the release workflow (and saved as the
+`.sha256` asset); paste it into `Package.swift`:
+
+```swift
+.binaryTarget(
+    name: "DenoiseVoiceCoreFFI",
+    url: "https://github.com/rajan471/denoise-voice-clarity/releases/download/0.1.0/DenoiseVoiceCoreFFI-0.1.0.xcframework.zip",
+    checksum: "<value from DenoiseVoiceCoreFFI-0.1.0.xcframework.zip.sha256>"
+)
+```
+
+(The committed `ios/Package.swift` uses a *local* `path:` binary target for
+in-repo development; switch to the `url:`+`checksum:` form for published
+consumption.)
