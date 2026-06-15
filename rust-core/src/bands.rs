@@ -1,0 +1,613 @@
+//! Port of WebRTC's three-band filterbank (modules/audio_processing/
+//! splitting_filter / three_band_filter_bank). BSD-3-Clause upstream;
+//! attribution below. 48 kHz <-> 3 x 16 kHz bands, 480 <-> 3x160 samples.
+//!
+//! Ported from:
+//!   https://webrtc.googlesource.com/src/+/refs/branch-heads/6478/modules/audio_processing/three_band_filter_bank.cc
+//!   https://webrtc.googlesource.com/src/+/refs/branch-heads/6478/modules/audio_processing/three_band_filter_bank.h
+//! (revision pinned: branch-heads/6478, i.e. WebRTC M126 branch.)
+//!
+//! Upstream attribution (BSD-3-Clause):
+//!
+//!   Copyright (c) 2015 The WebRTC project authors. All Rights Reserved.
+//!
+//!   Use of this source code is governed by a BSD-style license
+//!   that can be found in the LICENSE file in the root of the source
+//!   tree. An additional intellectual property rights grant can be found
+//!   in the file PATENTS. All contributing project authors may
+//!   be found in the AUTHORS file in the root of the source tree.
+//!
+//! An implementation of a 3-band FIR filter-bank with DCT modulation, similar
+//! to the one proposed in "Multirate Signal Processing for Communication
+//! Systems" by Fredric J Harris. The low-pass prototype is split with the
+//! noble identity into `kSparsity * kNumBands` polyphase branches; each branch
+//! is a sparse FIR (stride 4) whose output is cosine-modulated onto the three
+//! bands. The filterbank does not satisfy perfect reconstruction but the
+//! split→merge SNR is high enough for processing in the split domain.
+
+/// Number of bands (band 0 = 0–8 kHz, band 1 = 8–16 kHz, band 2 = 16–24 kHz).
+pub const NUM_BANDS: usize = 3;
+/// Full-band frame size: 10 ms @ 48 kHz.
+pub const FULL_FRAME: usize = 480;
+/// Per-band frame size (each band is downsampled by `NUM_BANDS`).
+pub const BAND_FRAME: usize = FULL_FRAME / NUM_BANDS; // 160
+
+// Upstream constants (three_band_filter_bank.h).
+const SPARSITY: usize = 4; // kSparsity
+const STRIDE_LOG2: usize = 2; // kStrideLog2
+const STRIDE: usize = 1 << STRIDE_LOG2; // kStride = 4
+const NUM_ZERO_FILTERS: usize = 2; // kNumZeroFilters
+const FILTER_SIZE: usize = 4; // kFilterSize
+const MEMORY_SIZE: usize = FILTER_SIZE * STRIDE - 1; // kMemorySize = 15
+const NUM_NON_ZERO_FILTERS: usize = SPARSITY * NUM_BANDS - NUM_ZERO_FILTERS; // 10
+
+const SUB_SAMPLING: usize = NUM_BANDS; // kSubSampling
+const DCT_SIZE: usize = NUM_BANDS; // kDctSize
+
+const ZERO_FILTER_INDEX_1: usize = 3; // kZeroFilterIndex1
+const ZERO_FILTER_INDEX_2: usize = 9; // kZeroFilterIndex2
+
+// The Matlab code to generate these `FILTER_COEFFS` is (upstream comment):
+//
+//   N = kNumBands * kSparsity * kFilterSize - 1;
+//   h = fir1(N, 1 / (2 * kNumBands), kaiser(N + 1, 3.5));
+//   reshape(h, kNumBands * kSparsity, kFilterSize);
+//
+// Values are VERBATIM from upstream `kFilterCoeffs`.
+#[rustfmt::skip]
+const FILTER_COEFFS: [[f32; FILTER_SIZE]; NUM_NON_ZERO_FILTERS] = [
+    [-0.000_477_49, -0.004_968_88,  0.165_471_18,  0.004_254_96],
+    [-0.001_732_87, -0.015_857_78,  0.149_890_04,  0.009_941_13],
+    [-0.003_048_15, -0.025_360_82,  0.121_545_42,  0.011_579_93],
+    [-0.003_469_46, -0.025_878_86,  0.047_604_41,  0.006_075_94],
+    [-0.001_547_17, -0.011_360_76,  0.013_874_58,  0.001_863_53],
+    [ 0.001_863_53,  0.013_874_58, -0.011_360_76, -0.001_547_17],
+    [ 0.006_075_94,  0.047_604_41, -0.025_878_86, -0.003_469_46],
+    [ 0.009_832_12,  0.085_431_75, -0.029_827_67, -0.003_835_09],
+    [ 0.009_941_13,  0.149_890_04, -0.015_857_78, -0.001_732_87],
+    [ 0.004_254_96,  0.165_471_18, -0.004_968_88, -0.000_477_49],
+];
+
+// VERBATIM from upstream `kDctModulation`.
+#[rustfmt::skip]
+const DCT_MODULATION: [[f32; DCT_SIZE]; NUM_NON_ZERO_FILTERS] = [
+    [ 2.0,           2.0,  2.0          ],
+    [ 1.732_050_77,  0.0, -1.732_050_77 ],
+    [ 1.0,          -2.0,  1.0          ],
+    [-1.0,           2.0, -1.0          ],
+    [-1.732_050_77,  0.0,  1.732_050_77 ],
+    [-2.0,          -2.0, -2.0          ],
+    [-1.732_050_77,  0.0,  1.732_050_77 ],
+    [-1.0,           2.0, -1.0          ],
+    [ 1.0,          -2.0,  1.0          ],
+    [ 1.732_050_77,  0.0, -1.732_050_77 ],
+];
+
+/// Maps a polyphase branch index (0..kSparsity*kNumBands) to its non-zero
+/// filter index, or `None` for the two all-zero branches. Port of the
+/// `kZeroFilterIndex1` / `kZeroFilterIndex2` skip logic in Analysis/Synthesis.
+#[inline]
+fn non_zero_filter_index(index: usize) -> Option<usize> {
+    if index == ZERO_FILTER_INDEX_1 || index == ZERO_FILTER_INDEX_2 {
+        None
+    } else if index < ZERO_FILTER_INDEX_1 {
+        Some(index)
+    } else if index < ZERO_FILTER_INDEX_2 {
+        Some(index - 1)
+    } else {
+        Some(index - 2)
+    }
+}
+
+/// Port of upstream `FilterCore`: filters `input` with the sparse (stride-4)
+/// FIR `filter`, applying a shift of `in_shift` input samples, using and
+/// updating the per-filter `state` (the last `MEMORY_SIZE` input samples).
+fn filter_core(
+    filter: &[f32; FILTER_SIZE],
+    input: &[f32; BAND_FRAME],
+    in_shift: usize,
+    out: &mut [f32; BAND_FRAME],
+    state: &mut [f32; MEMORY_SIZE],
+) {
+    debug_assert!(in_shift <= STRIDE - 1);
+    out.fill(0.0);
+
+    for k in 0..in_shift {
+        // Safe: k < in_shift <= STRIDE-1 = 3 < MEMORY_SIZE = 15, so MEMORY_SIZE + k - in_shift >= 0.
+        let mut j = (MEMORY_SIZE + k - in_shift) as isize;
+        for i in 0..FILTER_SIZE {
+            out[k] += state[j as usize] * filter[i];
+            j -= STRIDE as isize;
+        }
+    }
+
+    let mut shift = 0usize;
+    for k in in_shift..FILTER_SIZE * STRIDE {
+        let loop_limit = FILTER_SIZE.min(1 + (shift >> STRIDE_LOG2));
+        // loop_limit guarantees j = shift - i*STRIDE >= 0 for all i in 0..loop_limit.
+        let mut j = shift as isize;
+        for i in 0..loop_limit {
+            out[k] += input[j as usize] * filter[i];
+            j -= STRIDE as isize;
+        }
+        // Safe: shift >= (loop_limit-1)*STRIDE, so MEMORY_SIZE + shift - loop_limit*STRIDE >= MEMORY_SIZE - STRIDE = 11.
+        let mut j = (MEMORY_SIZE + shift - loop_limit * STRIDE) as isize;
+        for i in loop_limit..FILTER_SIZE {
+            out[k] += state[j as usize] * filter[i];
+            j -= STRIDE as isize;
+        }
+        shift += 1;
+    }
+
+    let mut shift = FILTER_SIZE * STRIDE - in_shift;
+    for k in FILTER_SIZE * STRIDE..BAND_FRAME {
+        let mut j = shift as isize;
+        for i in 0..FILTER_SIZE {
+            out[k] += input[j as usize] * filter[i];
+            j -= STRIDE as isize;
+        }
+        shift += 1;
+    }
+
+    // Update current state with the last MEMORY_SIZE input samples.
+    state.copy_from_slice(&input[BAND_FRAME - MEMORY_SIZE..]);
+}
+
+/// Three-band analysis/synthesis filterbank (port of WebRTC's
+/// `ThreeBandFilterBank`). Analysis (`split`) and synthesis (`merge`) keep
+/// separate filter state, so one instance can do both directions without
+/// state collisions. All state lives in fixed-size arrays; `split` / `merge`
+/// never allocate.
+pub struct ThreeBandFilterBank {
+    state_analysis: [[f32; MEMORY_SIZE]; NUM_NON_ZERO_FILTERS],
+    state_synthesis: [[f32; MEMORY_SIZE]; NUM_NON_ZERO_FILTERS],
+}
+
+impl Default for ThreeBandFilterBank {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ThreeBandFilterBank {
+    /// Create a filterbank with zeroed state.
+    pub fn new() -> Self {
+        Self {
+            state_analysis: [[0.0; MEMORY_SIZE]; NUM_NON_ZERO_FILTERS],
+            state_synthesis: [[0.0; MEMORY_SIZE]; NUM_NON_ZERO_FILTERS],
+        }
+    }
+
+    /// Reset all filter state (call on stream restart).
+    pub fn reset(&mut self) {
+        self.state_analysis = [[0.0; MEMORY_SIZE]; NUM_NON_ZERO_FILTERS];
+        self.state_synthesis = [[0.0; MEMORY_SIZE]; NUM_NON_ZERO_FILTERS];
+    }
+
+    /// 480 full-band samples -> band-major 3x160. Port of upstream
+    /// `Analysis`: serial-to-parallel downsampling by 3, sparse polyphase
+    /// filtering, DCT (cosine) modulation accumulated per band.
+    ///
+    /// `full` must be `FULL_FRAME` samples; `out_bands` must be `FULL_FRAME`
+    /// long, laid out band-major: `[b0[0..160], b1[0..160], b2[0..160]]`.
+    ///
+    /// Slices are used (rather than fixed-size array refs) because FFI/mobile
+    /// callers pass runtime-length buffers whose sizes are unknown at compile time.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `full.len() != FULL_FRAME` (480) or `out_bands.len() != FULL_FRAME` (480).
+    pub fn split(&mut self, full: &[f32], out_bands: &mut [f32]) {
+        assert_eq!(full.len(), FULL_FRAME);
+        assert_eq!(out_bands.len(), FULL_FRAME);
+        out_bands.fill(0.0);
+
+        for downsampling_index in 0..SUB_SAMPLING {
+            // Downsample to form the filter input.
+            let mut in_subsampled = [0.0f32; BAND_FRAME];
+            for k in 0..BAND_FRAME {
+                in_subsampled[k] =
+                    full[(SUB_SAMPLING - 1) - downsampling_index + SUB_SAMPLING * k];
+            }
+
+            for in_shift in 0..STRIDE {
+                // Choose filter, skip zero filters.
+                let index = downsampling_index + in_shift * SUB_SAMPLING;
+                let Some(filter_index) = non_zero_filter_index(index) else {
+                    continue;
+                };
+
+                // Filter.
+                let mut out_subsampled = [0.0f32; BAND_FRAME];
+                filter_core(
+                    &FILTER_COEFFS[filter_index],
+                    &in_subsampled,
+                    in_shift,
+                    &mut out_subsampled,
+                    &mut self.state_analysis[filter_index],
+                );
+
+                // Band and modulate the output.
+                for band in 0..NUM_BANDS {
+                    let modulation = DCT_MODULATION[filter_index][band];
+                    let out_band = &mut out_bands[band * BAND_FRAME..(band + 1) * BAND_FRAME];
+                    for n in 0..BAND_FRAME {
+                        out_band[n] += modulation * out_subsampled[n];
+                    }
+                }
+            }
+        }
+    }
+
+    /// Band-major 3x160 -> 480 full-band samples. Port of upstream
+    /// `Synthesis`: cosine modulation of the banded input, sparse polyphase
+    /// filtering, parallel-to-serial upsampling by 3.
+    ///
+    /// `bands` must be `FULL_FRAME` long, band-major (see `split`); `out`
+    /// must be `FULL_FRAME` samples.
+    ///
+    /// Slices are used (rather than fixed-size array refs) because FFI/mobile
+    /// callers pass runtime-length buffers whose sizes are unknown at compile time.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `bands.len() != FULL_FRAME` (480) or `out.len() != FULL_FRAME` (480).
+    pub fn merge(&mut self, bands: &[f32], out: &mut [f32]) {
+        assert_eq!(bands.len(), FULL_FRAME);
+        assert_eq!(out.len(), FULL_FRAME);
+        out.fill(0.0);
+
+        for upsampling_index in 0..SUB_SAMPLING {
+            for in_shift in 0..STRIDE {
+                // Choose filter, skip zero filters.
+                let index = upsampling_index + in_shift * SUB_SAMPLING;
+                let Some(filter_index) = non_zero_filter_index(index) else {
+                    continue;
+                };
+
+                // Prepare filter input by modulating the banded input.
+                let mut in_subsampled = [0.0f32; BAND_FRAME];
+                for band in 0..NUM_BANDS {
+                    let modulation = DCT_MODULATION[filter_index][band];
+                    let in_band = &bands[band * BAND_FRAME..(band + 1) * BAND_FRAME];
+                    for n in 0..BAND_FRAME {
+                        in_subsampled[n] += modulation * in_band[n];
+                    }
+                }
+
+                // Filter.
+                let mut out_subsampled = [0.0f32; BAND_FRAME];
+                filter_core(
+                    &FILTER_COEFFS[filter_index],
+                    &in_subsampled,
+                    in_shift,
+                    &mut out_subsampled,
+                    &mut self.state_synthesis[filter_index],
+                );
+
+                // Upsample.
+                const UPSAMPLING_SCALING: f32 = SUB_SAMPLING as f32;
+                for k in 0..BAND_FRAME {
+                    out[upsampling_index + SUB_SAMPLING * k] +=
+                        UPSAMPLING_SCALING * out_subsampled[k];
+                }
+            }
+        }
+    }
+}
+
+use crate::clarity::{ClarityChain, ClarityConfig};
+use crate::{Config, VoiceClarity, FRAME_SIZE, SAMPLE_RATE};
+
+/// Wraps `VoiceClarity` for WebRTC's banded capture-post buffers and owns the
+/// rate policy: full chain (DFN denoiser + clarity) at 48 kHz; clarity-only at
+/// any other sample rate. WebRTC's capture-post processor hands audio in the
+/// split domain — at 48 kHz that's 3 bands x 160 frames (band-major), so this
+/// type merges to full-band, runs the chain, and splits back. Any other shape
+/// is treated as clarity-only on band 0 (the voice band).
+///
+/// This is the seam the C FFI wraps; one instance per audio stream, owned by
+/// a single audio thread.
+pub struct BandedVoiceClarity {
+    config: Config,
+    sample_rate: u32,
+    /// Full chain — present only when initialised at 48 kHz.
+    full: Option<VoiceClarity>,
+    /// Clarity-only chain at the native rate — present off 48 kHz.
+    clarity_only: Option<ClarityChain>,
+    merge_fb: ThreeBandFilterBank,
+    split_fb: ThreeBandFilterBank,
+    // Scratch full-band buffer so process_banded never allocates.
+    scratch: [f32; FRAME_SIZE],
+    enabled: bool,
+}
+
+impl BandedVoiceClarity {
+    /// Create an instance from `config`. Call `init` before processing to
+    /// bind it to a sample rate; until then it defaults to 48 kHz with no
+    /// chain built.
+    pub fn new(config: Config) -> Self {
+        Self {
+            enabled: config.enabled,
+            config,
+            sample_rate: SAMPLE_RATE,
+            full: None,
+            clarity_only: None,
+            merge_fb: ThreeBandFilterBank::new(),
+            split_fb: ThreeBandFilterBank::new(),
+            scratch: [0.0; FRAME_SIZE],
+        }
+    }
+
+    /// Bind to a sample rate (rate policy lives here): 48 kHz builds the full
+    /// DFN + clarity chain; any other rate builds a clarity-only chain at the
+    /// native rate. Fresh filterbank state in both cases. Mono only — the
+    /// banded buffer is a single channel; `channels == 0` is an error.
+    pub fn init(&mut self, sample_rate: u32, channels: u32) -> Result<(), &'static str> {
+        if channels == 0 {
+            return Err("channels must be >= 1");
+        }
+        self.sample_rate = sample_rate;
+        if sample_rate == SAMPLE_RATE {
+            self.full = Some(VoiceClarity::new(self.config.clone()));
+            self.clarity_only = None;
+        } else {
+            self.full = None;
+            self.clarity_only = Some(ClarityChain::new(
+                sample_rate as f32,
+                self.config.clarity.clone(),
+            ));
+        }
+        self.merge_fb = ThreeBandFilterBank::new();
+        self.split_fb = ThreeBandFilterBank::new();
+        self.scratch = [0.0; FRAME_SIZE];
+        Ok(())
+    }
+
+    /// Re-initialise for `new_rate`, dropping all DSP state (stream restart /
+    /// rate change).
+    pub fn reset(&mut self, new_rate: u32) -> Result<(), &'static str> {
+        self.init(new_rate, 1)
+    }
+
+    /// True when the full chain (with the DFN denoiser) is live, i.e. the
+    /// instance was initialised at 48 kHz.
+    pub fn dfn_active(&self) -> bool {
+        self.full.is_some()
+    }
+
+    /// Master enable. When off, `process_banded` is a no-op passthrough.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        self.config.enabled = enabled;
+        if let Some(full) = &mut self.full {
+            full.set_enabled(enabled);
+        }
+    }
+
+    /// Forward the denoiser attenuation limit (dB). Stored so a later `init`
+    /// rebuilds with it; no-op for the clarity-only chain (no denoiser there).
+    pub fn set_attenuation_limit_db(&mut self, db: f32) {
+        self.config.attenuation_limit_db = db;
+        if let Some(full) = &mut self.full {
+            full.set_attenuation_limit_db(db);
+        }
+    }
+
+    /// Forward clarity settings to whichever chain is live, and store them so
+    /// a later `init` rebuilds with them.
+    pub fn set_clarity(&mut self, cfg: ClarityConfig) {
+        self.config.clarity = cfg.clone();
+        if let Some(full) = &mut self.full {
+            full.set_clarity(cfg);
+        } else if let Some(clarity) = &mut self.clarity_only {
+            clarity.set_config(cfg);
+        }
+    }
+
+    /// Process one 10 ms banded buffer in place. `buf` is band-major:
+    /// `bands` x `frames_per_band` samples.
+    ///
+    /// - Disabled: returns `Ok` leaving `buf` untouched.
+    /// - `buf.len() != bands * frames_per_band`: `Err` (shape mismatch).
+    /// - 3 x `BAND_FRAME` with the full chain live (48 kHz): merge to
+    ///   full-band, run the full chain, split back.
+    /// - 1 x `FRAME_SIZE` with the full chain live: run the full chain
+    ///   directly (host gave us full-band already).
+    /// - Anything else: clarity-only on band 0; upper bands pass untouched.
+    pub fn process_banded(
+        &mut self,
+        bands: usize,
+        frames_per_band: usize,
+        buf: &mut [f32],
+    ) -> Result<(), &'static str> {
+        if buf.len() != bands * frames_per_band {
+            return Err("buffer length != bands * frames_per_band");
+        }
+        if !self.enabled {
+            return Ok(());
+        }
+
+        // Split borrows so merge/split filterbanks, scratch, and the chain can
+        // be used together without tripping the borrow checker.
+        let Self {
+            full,
+            clarity_only,
+            merge_fb,
+            split_fb,
+            scratch,
+            sample_rate,
+            config,
+            ..
+        } = self;
+
+        match full {
+            Some(chain) if bands == NUM_BANDS && frames_per_band == BAND_FRAME => {
+                merge_fb.merge(buf, scratch);
+                chain.process(scratch);
+                split_fb.split(scratch, buf);
+                Ok(())
+            }
+            Some(chain) if bands == 1 && frames_per_band == FRAME_SIZE => {
+                chain.process(buf);
+                Ok(())
+            }
+            _ => {
+                // Unexpected shape (or non-48 kHz rate): clarity-only on the
+                // lowest band; upper bands (if any) pass through untouched.
+                // Lazy build allocates once on the first such frame only —
+                // acceptable, every later frame is allocation-free.
+                let clarity = clarity_only.get_or_insert_with(|| {
+                    ClarityChain::new(*sample_rate as f32, config.clarity.clone())
+                });
+                clarity.process(&mut buf[..frames_per_band]);
+                Ok(())
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Config;
+
+    /// split -> merge must reconstruct a sine within tolerance (the filterbank
+    /// has inherent delay; compensate by cross-correlating for best lag).
+    /// Both directions are driven through the SAME instance to exercise the
+    /// documented guarantee that analysis and synthesis state don't collide.
+    #[test]
+    fn split_merge_reconstructs_sine() {
+        let mut fb = ThreeBandFilterBank::new();
+        let n_frames = 50;
+        let mut input = Vec::new();
+        let mut output = Vec::new();
+        for f in 0..n_frames {
+            let full: Vec<f32> = (0..FULL_FRAME)
+                .map(|i| {
+                    let t = (f * FULL_FRAME + i) as f32 / 48_000.0;
+                    (2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.5
+                })
+                .collect();
+            input.extend_from_slice(&full);
+            let mut bands = [0.0f32; FULL_FRAME];
+            fb.split(&full, &mut bands);
+            let mut recon = [0.0f32; FULL_FRAME];
+            fb.merge(&bands, &mut recon);
+            output.extend_from_slice(&recon);
+        }
+        let mut best = (0usize, f32::MIN);
+        for lag in 0..512 {
+            // 512: lag search window covers the filterbank's group delay headroom
+            let corr: f32 = input[..input.len() - 512]
+                .iter()
+                .zip(&output[lag..])
+                .map(|(a, b)| a * b)
+                .sum();
+            if corr > best.1 {
+                best = (lag, corr);
+            }
+        }
+        let lag = best.0;
+        // WebRTC's three-band filterbank is intentionally NOT perfect-reconstruction:
+        // the upstream header documents ~0.3 dB passband ripple, and the split+merge
+        // chain shows a constant ~0.36 dB gain droop (gain ~0.9598 at 440 Hz). That
+        // droop caps raw SNR at ~27.9 dB — verified identical against the compiled
+        // upstream C++. So we project out the optimal scalar gain g and measure SNR
+        // on the residual; a faithful port scores ~59.8 dB, wrong coefficients tank it.
+        let (mut cross, mut out_e) = (0.0f64, 0.0f64);
+        for i in 4800..input.len() - 512 {
+            // 4800: skip first 100 ms of warm-up so transient state doesn't skew SNR
+            cross += input[i] as f64 * output[i + lag] as f64;
+            out_e += (output[i + lag] as f64).powi(2);
+        }
+        let g = cross / out_e.max(1e-12);
+        let (mut sig, mut err) = (0.0f64, 0.0f64);
+        for i in 4800..input.len() - 512 {
+            // 4800: same warm-up skip as above
+            sig += (input[i] as f64).powi(2);
+            err += (input[i] as f64 - g * output[i + lag] as f64).powi(2);
+        }
+        let snr_db = 10.0 * (sig / err.max(1e-12)).log10();
+        println!("gain-compensated SNR {snr_db:.1} dB, gain {g:.4}, lag {lag}");
+        assert!(
+            snr_db > 50.0,
+            "gain-compensated reconstruction SNR {snr_db:.1} dB too low (lag {lag}, gain {g:.4})"
+        );
+        assert!(
+            (20.0 * (g as f32).abs().log10()).abs() < 1.0,
+            "chain gain {g:.4} more than 1 dB from unity (lag {lag})"
+        );
+    }
+
+    /// Energy of each tone must land in the expected band (not the others).
+    /// Probes all three bands: 4 kHz → band 0 (0–8 kHz),
+    /// 12 kHz → band 1 (8–16 kHz), 20 kHz → band 2 (16–24 kHz).
+    /// A fresh filterbank is used per tone so energies don't bleed across probes.
+    #[test]
+    fn split_routes_energy_to_correct_band() {
+        let probes: &[(f32, usize)] = &[
+            (4_000.0, 0),
+            (12_000.0, 1),
+            (20_000.0, 2),
+        ];
+
+        for &(freq, expected_band) in probes {
+            // Fresh instance per tone — no cross-probe state bleed.
+            let mut fb = ThreeBandFilterBank::new();
+            let mut e = [0.0f32; NUM_BANDS];
+            let mut bands = [0.0f32; FULL_FRAME];
+            for f in 0..20 {
+                let full: Vec<f32> = (0..FULL_FRAME)
+                    .map(|i| {
+                        let t = (f * FULL_FRAME + i) as f32 / 48_000.0;
+                        (2.0 * std::f32::consts::PI * freq * t).sin()
+                    })
+                    .collect();
+                fb.split(&full, &mut bands);
+                for b in 0..NUM_BANDS {
+                    e[b] += bands[b * BAND_FRAME..(b + 1) * BAND_FRAME]
+                        .iter()
+                        .map(|x| x * x)
+                        .sum::<f32>();
+                }
+            }
+            for other in 0..NUM_BANDS {
+                if other == expected_band {
+                    continue;
+                }
+                assert!(
+                    e[expected_band] > 10.0 * e[other],
+                    "{freq} Hz: expected band {expected_band} to dominate band {other} by 10x, got {e:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn banded_48k_3band_processes() {
+        let mut p = super::BandedVoiceClarity::new(Config::default());
+        assert!(p.init(48_000, 1).is_ok());
+        let mut buf = [0.1f32; FULL_FRAME]; // 3 bands x 160, band-major
+        let original = buf;
+        assert_eq!(p.process_banded(3, BAND_FRAME, &mut buf), Ok(()));
+        assert!(buf != original, "enabled 48k path must actually process audio");
+    }
+
+    #[test]
+    fn banded_16k_single_band_is_clarity_only() {
+        let mut p = super::BandedVoiceClarity::new(Config::default());
+        assert!(p.init(16_000, 1).is_ok());
+        let mut buf = [0.1f32; 160]; // 10ms @ 16k, 1 band
+        assert_eq!(p.process_banded(1, 160, &mut buf), Ok(()));
+        assert!(!p.dfn_active(), "DFN must be bypassed off 48k");
+    }
+
+    #[test]
+    fn banded_rejects_shape_mismatch() {
+        let mut p = super::BandedVoiceClarity::new(Config::default());
+        assert!(p.init(48_000, 1).is_ok());
+        let mut buf = [0.0f32; 100];
+        assert!(p.process_banded(3, 100, &mut buf).is_err());
+    }
+}

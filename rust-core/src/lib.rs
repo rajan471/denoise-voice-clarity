@@ -8,8 +8,13 @@
 //! web, native processor on mobile) is responsible for resampling to 48 kHz
 //! mono and for buffering the platform's block size into `FRAME_SIZE` frames.
 
+pub mod bands;
 pub mod clarity;
 pub mod engine;
+#[cfg(feature = "ffi")]
+pub mod ffi;
+#[cfg(feature = "android")]
+pub mod jni;
 pub mod vad;
 
 #[cfg(feature = "wasm")]
