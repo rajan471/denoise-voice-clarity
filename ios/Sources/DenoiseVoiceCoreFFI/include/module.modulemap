@@ -1,0 +1,4 @@
+module DenoiseVoiceCoreFFI {
+    header "denoise_voice_core.h"
+    export *
+}

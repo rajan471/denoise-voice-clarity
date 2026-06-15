@@ -71,7 +71,7 @@ mod dfn {
             let params = DfParams::default();
             let rp = RuntimeParams::default_with_ch(1);
             let model =
-                DfTract::new(params, &rp).map_err(|e| format!("init DFN tract: {e}"))?;
+                DfTract::new(params, &rp).map_err(|e| format!("init DFN tract: {e:?}"))?;
             if model.hop_size != FRAME_SIZE {
                 return Err(format!(
                     "DFN hop_size {} != FRAME_SIZE {}",
@@ -120,7 +120,20 @@ mod tests {
 
     #[test]
     fn passthrough_is_identity() {
-        let mut e = new_engine(); // passthrough in the default test build
+        // Test the passthrough engine directly — with `--features dfn`,
+        // new_engine() returns the real DFN engine instead.
+        let mut e = PassthroughDenoiser;
+        let original: Vec<f32> = (0..FRAME_SIZE).map(|i| (i as f32).sin()).collect();
+        let mut frame = original.clone();
+        e.process(&mut frame);
+        assert_eq!(frame, original);
+    }
+
+    // In the default build new_engine() must hand back the passthrough engine.
+    #[cfg(not(feature = "dfn"))]
+    #[test]
+    fn default_engine_is_passthrough_identity() {
+        let mut e = new_engine();
         let original: Vec<f32> = (0..FRAME_SIZE).map(|i| (i as f32).sin()).collect();
         let mut frame = original.clone();
         e.process(&mut frame);

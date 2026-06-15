@@ -40,7 +40,7 @@ integration layer carries no license cost either.
 - Training our own model (we embed an existing one).
 - Server-side denoising on the SFU (it forwards encoded RTP, does not process
   media; agent-side denoising is a separate future effort).
-- Android/iOS implementation in this repo (separate repos; reuse the core).
+- ~~Android/iOS implementation in this repo~~ — superseded 2026-06-12: the adapters now live here (`android/`, `ios/`); see `docs/superpowers/specs/2026-06-12-voice-clarity-mobile-adapters-design.md`.
 
 ## 3. Engine decision
 
@@ -128,7 +128,7 @@ engine behind one trait). Not built up front (YAGNI).
 2. Wire web adapter into `infra/livekit`; lazy-load; flag off.
 3. Dogfood on dev/staging; gather CPU/battery/quality data.
 4. Cohort enable; compare vs native.
-5. Android adapter (reuse core) → iOS adapter; each its own spec → plan cycle.
+5. ~~Android adapter (reuse core) → iOS adapter; each its own spec → plan cycle.~~ — superseded 2026-06-12: adapters built in-repo (`android/`, `ios/`); mobile teams integrate the AAR / Swift Package behind their own toggle and run device A/B before enabling by default.
 
 ## 11. Open questions
 - DFN3 WASM: single-threaded vs SharedArrayBuffer-threaded (decide after a spike
