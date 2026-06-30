@@ -1,13 +1,21 @@
 {
   "name": "denoise-voice-clarity",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Real-time in-browser noise suppression + voice clarity for WebRTC (DeepFilterNet 3, WASM). Open-source, license-free Krisp replacement. Works with plain getUserMedia or LiveKit. Lazy-loaded.",
   "license": "MIT",
   "author": {
     "name": "rajan471",
     "url": "https://www.npmjs.com/~rajan471"
   },
-  "homepage": "https://www.npmjs.com/package/denoise-voice-clarity",
+  "homepage": "https://rajan471.github.io/denoise-voice-clarity/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rajan471/denoise-voice-clarity.git",
+    "directory": "web"
+  },
+  "bugs": {
+    "url": "https://github.com/rajan471/denoise-voice-clarity/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",
