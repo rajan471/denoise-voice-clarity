@@ -13,9 +13,13 @@ per-seat fees. Works with **plain WebRTC / `getUserMedia`** and ships a thin
 
 ### ▶ [Try the live demo](https://rajan471.github.io/denoise-voice-clarity/) — hear it on your own mic
 
+[![denoise-voice-clarity live demo: toggling the filter collapses the noise in the spectrum](https://raw.githubusercontent.com/rajan471/denoise-voice-clarity/main/web/assets/demo.gif)](https://rajan471.github.io/denoise-voice-clarity/)
+
 Toggle the filter on your microphone, record an A/B clip, and watch a live
 input-vs-denoised spectrum: **https://rajan471.github.io/denoise-voice-clarity/**
-(runs entirely in your browser — no audio is uploaded).
+(runs entirely in your browser — no audio is uploaded). In the clip above,
+**red** is the raw mic and **green** is the denoised output — flip the filter on
+and the green collapses below the red: that gap is the noise being removed.
 
 ---
 

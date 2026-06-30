@@ -1,6 +1,6 @@
 {
   "name": "denoise-voice-clarity",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Real-time in-browser noise suppression + voice clarity for WebRTC (DeepFilterNet 3, WASM). Open-source, license-free Krisp replacement. Works with plain getUserMedia or LiveKit. Lazy-loaded.",
   "license": "MIT",
   "author": {
