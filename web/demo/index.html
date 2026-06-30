@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>denoise-voice-clarity — hear the difference</title>
+    <meta
+      name="description"
+      content="Open-source, in-browser noise suppression for WebRTC calls. A free, license-free Krisp replacement built on DeepFilterNet 3. Try it with your own mic."
+    />
+    <style>
+      :root {
+        --bg: #0b0e11;
+        --panel: #14181d;
+        --panel-2: #1b2127;
+        --line: #262d35;
+        --ink: #e8edf2;
+        --muted: #8b97a3;
+        --accent: #33e6a0;
+        --accent-dim: #1f8e64;
+        --warn: #ffcf5c;
+        --raw: #ff6b6b;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); }
+      body {
+        font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      .mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; }
+      main { width: 100%; max-width: 760px; padding: 48px 20px 64px; }
+
+      header { margin-bottom: 28px; }
+      .eyebrow {
+        font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase;
+        color: var(--accent); font-weight: 600;
+      }
+      h1 {
+        font-size: clamp(30px, 6vw, 46px); line-height: 1.05; margin: 10px 0 12px;
+        letter-spacing: -0.02em; font-weight: 800;
+      }
+      h1 .x { color: var(--accent); }
+      .sub { color: var(--muted); font-size: 17px; max-width: 56ch; }
+      .trust {
+        margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px;
+      }
+      .pill {
+        font-size: 12px; color: var(--muted); border: 1px solid var(--line);
+        border-radius: 999px; padding: 4px 10px; background: var(--panel);
+      }
+      .pill b { color: var(--ink); font-weight: 600; }
+
+      .card {
+        background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+        padding: 22px; margin-top: 18px;
+      }
+      .card h2 { font-size: 14px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); margin: 0 0 16px; font-weight: 600; }
+
+      button {
+        font: inherit; cursor: pointer; border-radius: 11px; border: 1px solid var(--line);
+        background: var(--panel-2); color: var(--ink); padding: 12px 18px; font-weight: 600;
+        transition: transform .06s ease, background .15s ease, border-color .15s ease;
+      }
+      button:hover { border-color: #36414c; }
+      button:active { transform: translateY(1px); }
+      button:disabled { opacity: .4; cursor: not-allowed; }
+      .primary { background: var(--accent); color: #04150d; border-color: transparent; }
+      .primary:hover { background: #4ff0b0; }
+
+      .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+      .grow { flex: 1; }
+
+      canvas { width: 100%; height: 88px; display: block; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); }
+
+      .toggle {
+        display: inline-flex; align-items: center; gap: 10px; user-select: none;
+      }
+      .switch { width: 52px; height: 30px; border-radius: 999px; background: #2a323b; position: relative; transition: background .15s ease; flex: 0 0 auto; }
+      .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; transition: left .15s ease; }
+      .switch.on { background: var(--accent); }
+      .switch.on::after { left: 25px; }
+
+      .ab { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 4px; }
+      .ab .lane { border: 1px solid var(--line); border-radius: 12px; padding: 14px; background: var(--panel-2); }
+      .ab .lane h3 { margin: 0 0 10px; font-size: 13px; letter-spacing: .04em; }
+      .ab .lane.raw h3 { color: var(--raw); }
+      .ab .lane.clean h3 { color: var(--accent); }
+      .ab button { width: 100%; }
+      .ab audio { display: none; }
+
+      label.slider { display: block; color: var(--muted); font-size: 13px; margin-top: 6px; }
+      input[type="range"] { width: 100%; accent-color: var(--accent); }
+
+      .hint { color: var(--muted); font-size: 13px; margin-top: 10px; }
+      .warn { color: var(--warn); }
+      .hidden { display: none !important; }
+
+      .legend { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 12px; font-size: 13px; }
+      .legend .key { display: inline-flex; align-items: center; gap: 7px; }
+      .dot { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+      .dot.raw { background: var(--raw); }
+      .dot.clean { background: var(--accent); }
+      .raw-ink { color: var(--raw); }
+      .clean-ink { color: var(--accent); }
+
+      .meters { display: grid; grid-template-columns: 1fr 1fr auto; gap: 16px; align-items: center; margin-top: 16px; }
+      .meter-label { font-size: 13px; color: var(--muted); margin-bottom: 6px; display: flex; justify-content: space-between; }
+      .bar { height: 10px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; }
+      .fill { height: 100%; width: 0%; border-radius: 999px; transition: width .05s linear; }
+      .raw-fill { background: var(--raw); }
+      .clean-fill { background: var(--accent); }
+      .reduction { text-align: center; padding-left: 8px; border-left: 1px solid var(--line); }
+      .reduction-num { font-size: 26px; font-weight: 800; color: var(--accent); line-height: 1.1; }
+      @media (max-width: 560px) { .meters { grid-template-columns: 1fr; } .reduction { border-left: none; padding-left: 0; } }
+
+      footer { color: var(--muted); font-size: 14px; margin-top: 26px; }
+      footer a { color: var(--accent); text-decoration: none; }
+      footer a:hover { text-decoration: underline; }
+      pre.install { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; overflow:auto; font-size: 13px; }
+      .status { font-size: 13px; color: var(--muted); min-height: 18px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="eyebrow">open source · MIT · runs in your browser</div>
+        <h1>Hear the <span class="x">noise</span> disappear.</h1>
+        <p class="sub">
+          <span class="mono">denoise-voice-clarity</span> is a free, license-free
+          noise-suppression filter for WebRTC calls — a drop-in Krisp
+          replacement built on DeepFilterNet&nbsp;3, running 100% client-side via
+          WebAssembly. Try it below with your own microphone.
+        </p>
+        <div class="trust">
+          <span class="pill">🔒 <b>No audio leaves your device</b></span>
+          <span class="pill">⚡ <b>~Real-time</b>, on the audio thread</span>
+          <span class="pill">🧩 <b>LiveKit + plain WebRTC</b></span>
+        </div>
+      </header>
+
+      <section class="card" id="gate">
+        <h2>1 · Grant your mic</h2>
+        <div class="row">
+          <button class="primary" id="enable">Enable microphone</button>
+          <span class="status" id="gateStatus"></span>
+        </div>
+        <p class="hint">Loads a few MB of WASM on first use. Best with <b>headphones</b> if you turn on live monitoring (avoids echo).</p>
+      </section>
+
+      <section class="card hidden" id="live">
+        <h2>2 · Toggle it live</h2>
+        <canvas id="scope" width="720" height="88"></canvas>
+        <div class="row" style="margin-top:16px; justify-content: space-between;">
+          <div class="toggle" id="denoiseToggle">
+            <div class="switch on" id="denoiseSwitch"></div>
+            <div><b>Denoise</b> <span class="mono" id="denoiseLabel" style="color:var(--accent)">ON</span></div>
+          </div>
+          <div class="toggle" id="monitorToggle">
+            <div class="switch" id="monitorSwitch"></div>
+            <div>🎧 Monitor <span class="hint warn" id="monitorHint">(headphones!)</span></div>
+          </div>
+        </div>
+        <label class="slider">Clarity strength (presence&nbsp;EQ): <span class="mono" id="presenceVal">+4 dB</span>
+          <input type="range" id="presence" min="-12" max="12" step="1" value="4" />
+        </label>
+      </section>
+
+      <section class="card hidden" id="spectrumCard">
+        <h2>See it: voice vs noise, per frequency</h2>
+        <div class="legend">
+          <span class="key"><i class="dot raw"></i> Mic input <span class="hint">(voice + noise)</span></span>
+          <span class="key"><i class="dot clean"></i> Denoised output</span>
+          <span class="key hint">The red gap above green = noise removed.</span>
+        </div>
+        <canvas id="spectrum" width="720" height="200"></canvas>
+        <div class="meters">
+          <div class="meter">
+            <div class="meter-label">Input level <span class="mono raw-ink" id="inLevel">—</span></div>
+            <div class="bar"><div class="fill raw-fill" id="inBar"></div></div>
+          </div>
+          <div class="meter">
+            <div class="meter-label">Output level <span class="mono clean-ink" id="outLevel">—</span></div>
+            <div class="bar"><div class="fill clean-fill" id="outBar"></div></div>
+          </div>
+          <div class="reduction">
+            <div class="reduction-num mono" id="reduction">– dB</div>
+            <div class="hint">noise reduction<br />(go quiet to see it climb)</div>
+          </div>
+        </div>
+        <p class="hint">Bars are a live FFT, 0–8&nbsp;kHz (where speech lives). Make some noise without
+          talking: the green collapses while the red stays. Then talk: your voice passes through both.</p>
+      </section>
+
+      <section class="card hidden" id="compare">
+        <h2>3 · Record &amp; compare</h2>
+        <div class="row">
+          <button class="primary" id="record">● Record 5 seconds</button>
+          <span class="status" id="recStatus">Talk over some noise — typing, a fan, music, the TV.</span>
+        </div>
+        <div class="ab" style="margin-top:16px;">
+          <div class="lane raw">
+            <h3>● Original (untouched)</h3>
+            <button id="playRaw" disabled>▶ Play original</button>
+            <audio id="rawAudio"></audio>
+          </div>
+          <div class="lane clean">
+            <h3>● Denoised</h3>
+            <button id="playClean" disabled>▶ Play denoised</button>
+            <audio id="cleanAudio"></audio>
+          </div>
+        </div>
+      </section>
+
+      <footer>
+        <pre class="install mono">npm install denoise-voice-clarity</pre>
+        <p>
+          <a href="https://www.npmjs.com/package/denoise-voice-clarity">npm</a> ·
+          <a href="https://github.com/rajan471/denoise-voice-clarity">GitHub</a> ·
+          MIT licensed. No telemetry, no account, no per-seat fees.
+        </p>
+      </footer>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

@@ -1,10 +1,18 @@
-// Public entry for the web adapter.
+// Public entry for the web package.
 //
-// IMPORTANT (web-app bundle budget): consumers MUST import this module
-// dynamically (`await import('denoise-voice-clarity')`) and only when the
-// FEATURE_VOICE_CLARITY flag is on. The WASM is multi-MB; static-importing it
-// would blow the 350 KB initial-bundle CI gate in web-app.
+// IMPORTANT (bundle budget): the WASM core is multi-MB. Import this module
+// DYNAMICALLY (`await import('denoise-voice-clarity')`) and only when you
+// actually turn the feature on, so the WASM stays out of your initial bundle.
 
-export { VoiceClarityProcessor } from './VoiceClarityProcessor';
+// ── Provider-agnostic API (use this anywhere: getUserMedia, Twilio, Daily, …) ──
+export { createDenoisedTrack, createDenoisedStream } from './standalone';
+export type { DenoiseHandle } from './standalone';
+export { DenoiseEngine } from './engine';
+export type { DenoiseOptions } from './engine';
+
+// ── Capability check (call before constructing anything) ──
 export { isVoiceClaritySupported } from './loader';
+
+// ── LiveKit adapter (a thin TrackProcessor wrapper over the engine) ──
+export { VoiceClarityProcessor } from './VoiceClarityProcessor';
 export type { VoiceClarityOptions } from './VoiceClarityProcessor';
