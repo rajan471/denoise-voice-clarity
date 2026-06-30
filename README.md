@@ -4,6 +4,17 @@ A self-hosted, **license-free** replacement for the Krisp noise filter on
 LiveKit calls. Runs **client-side** in the participant's app, before audio is
 published to the SFU — the same place Krisp runs.
 
+### ▶ [Try the live demo](https://rajan471.github.io/denoise-voice-clarity/) — hear it on your own mic
+
+[![denoise-voice-clarity live demo: toggling the filter collapses the noise in the spectrum](https://raw.githubusercontent.com/rajan471/denoise-voice-clarity/main/web/assets/demo.gif)](https://rajan471.github.io/denoise-voice-clarity/)
+
+**red** = raw mic · **green** = denoised output. Flip the filter on and the green
+collapses below the red — that gap is the noise being removed.
+
+> The browser package is published on npm as
+> [**`denoise-voice-clarity`**](https://www.npmjs.com/package/denoise-voice-clarity)
+> and works with plain `getUserMedia` as well as LiveKit. See [`web/`](./web).
+
 It is a two-stage chain:
 
 ```
