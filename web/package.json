@@ -1,7 +1,7 @@
 {
   "name": "denoise-voice-clarity",
-  "version": "0.1.2",
-  "description": "LiveKit client-side noise suppression (DeepFilterNet 3) + voice clarity, in-browser via WASM. Open-source Krisp replacement. Lazy-loaded.",
+  "version": "0.2.0",
+  "description": "Real-time in-browser noise suppression + voice clarity for WebRTC (DeepFilterNet 3, WASM). Open-source, license-free Krisp replacement. Works with plain getUserMedia or LiveKit. Lazy-loaded.",
   "license": "MIT",
   "author": {
     "name": "rajan471",
@@ -28,15 +28,20 @@
     "node": ">=18"
   },
   "keywords": [
-    "livekit",
     "noise-suppression",
     "noise-cancellation",
+    "denoise",
     "voice",
+    "voice-clarity",
     "webrtc",
+    "getusermedia",
     "krisp",
+    "krisp-alternative",
+    "rnnoise",
     "deepfilternet",
     "audioworklet",
-    "wasm"
+    "wasm",
+    "livekit"
   ],
   "scripts": {
     "clean": "rm -rf dist",
@@ -51,6 +56,11 @@
   },
   "peerDependencies": {
     "livekit-client": "^2.17.0"
+  },
+  "peerDependenciesMeta": {
+    "livekit-client": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "esbuild": "^0.23.0",
