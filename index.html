@@ -124,7 +124,7 @@
       pre.install { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; overflow:auto; font-size: 13px; }
       .status { font-size: 13px; color: var(--muted); min-height: 18px; }
     </style>
-    <script type="module" crossorigin src="./assets/index-gZ-F0DYR.js"></script>
+    <script type="module" crossorigin src="./assets/index-qiMlyDwC.js"></script>
   </head>
   <body>
     <main>
@@ -200,18 +200,20 @@
       <section class="card hidden" id="compare">
         <h2>3 · Record &amp; compare</h2>
         <div class="row">
-          <button class="primary" id="record">● Record 5 seconds</button>
-          <span class="status" id="recStatus">Talk over some noise — typing, a fan, music, the TV.</span>
+          <button class="primary" id="record">● Record</button>
+          <span class="status" id="recStatus">Talk over some noise — typing, a fan, music, the TV. Records up to 3&nbsp;min, or stop when you're done.</span>
         </div>
         <div class="ab" style="margin-top:16px;">
           <div class="lane raw">
             <h3>● Original (untouched)</h3>
             <button id="playRaw" disabled>▶ Play original</button>
+            <button id="downloadRaw" disabled style="margin-top:10px;">⬇ Download original</button>
             <audio id="rawAudio"></audio>
           </div>
           <div class="lane clean">
             <h3>● Denoised</h3>
             <button id="playClean" disabled>▶ Play denoised</button>
+            <button id="downloadClean" disabled style="margin-top:10px;">⬇ Download denoised</button>
             <audio id="cleanAudio"></audio>
           </div>
         </div>
