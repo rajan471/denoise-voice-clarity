@@ -1,0 +1,88 @@
+name: deploy-demo
+
+# Builds the in-browser demo (web/demo) and publishes it to GitHub Pages.
+#
+# Pages is configured to "Deploy from a branch" → gh-pages, served on the
+# custom domain denoise.rklabs.co.in. This job rebuilds the WASM + demo and
+# pushes the built output to that branch (preserving the CNAME), so the live
+# site tracks main automatically instead of a manual `vite build` + push.
+#
+# The demo needs the WASM bundle, which is gitignored and produced from Rust
+# via scripts/build-wasm.sh. The default `wasm` feature is the passthrough +
+# clarity chain (no DeepFilterNet model), so no model weights are downloaded.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'rust-core/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # peaceiris pushes to gh-pages via GITHUB_TOKEN
+
+# One deploy at a time; newer pushes supersede an in-flight build.
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain (wasm32)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-core
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Package deps (esbuild + tsc) — the demo's prebuild runs `npm run build`
+      # here, so web/node_modules must exist before the demo build.
+      - name: Install web deps
+        working-directory: web
+        run: npm ci
+
+      # Produce web/wasm/ (gitignored). Must precede the demo build, whose
+      # prebuild only copies existing wasm, it doesn't compile it.
+      - name: Build WASM
+        working-directory: web
+        run: npm run build:wasm
+
+      # Demo has no committed lockfile (only vite as a devDependency).
+      - name: Install demo deps
+        working-directory: web/demo
+        run: npm install
+
+      # prebuild → `cd .. && npm run build` (copy:wasm + build:js + build:types),
+      # then `vite build` → web/demo/dist.
+      - name: Build demo
+        working-directory: web/demo
+        run: npm run build
+
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: web/demo/dist
+          publish_branch: gh-pages
+          cname: denoise.rklabs.co.in
+          commit_message: "deploy demo ${{ github.sha }}"
