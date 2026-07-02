@@ -221,11 +221,15 @@ function startSpectrum(rawStream: MediaStream, cleanStream: MediaStream) {
 }
 
 // ── Record raw + denoised simultaneously, then A/B playback ──────────────────
+const MAX_RECORD_MS = 3 * 60 * 1000; // 3 minutes, then auto-stop
+
 function setupRecorder() {
   const recordBtn = $<HTMLButtonElement>('record');
   const recStatus = $('recStatus');
   const playRaw = $<HTMLButtonElement>('playRaw');
   const playClean = $<HTMLButtonElement>('playClean');
+  const downloadRaw = $<HTMLButtonElement>('downloadRaw');
+  const downloadClean = $<HTMLButtonElement>('downloadClean');
   const rawAudio = $<HTMLAudioElement>('rawAudio');
   const cleanAudio = $<HTMLAudioElement>('cleanAudio');
 
@@ -233,8 +237,23 @@ function setupRecorder() {
     ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find((m) =>
       MediaRecorder.isTypeSupported(m),
     );
+  const extFor = (type: string) => (type.includes('mp4') ? 'm4a' : 'webm');
+
+  // Object URLs backing the current recording — revoked before the next take so
+  // repeated recordings don't leak blobs.
+  let rawUrl: string | null = null;
+  let cleanUrl: string | null = null;
+
+  let recording = false;
+  let stopRecording: (() => void) | null = null;
 
   recordBtn.addEventListener('click', async () => {
+    // Second click while a take is in progress → stop early.
+    if (recording) {
+      stopRecording?.();
+      return;
+    }
+
     const mimeType = pickMime();
     const rawRec = new MediaRecorder(rawStream!, mimeType ? { mimeType } : undefined);
     const cleanRec = new MediaRecorder(handle!.stream, mimeType ? { mimeType } : undefined);
@@ -248,29 +267,79 @@ function setupRecorder() {
       new Promise<void>((r) => (cleanRec.onstop = () => r())),
     ]);
 
-    recordBtn.disabled = true;
+    // Fresh take — invalidate old outputs.
     playRaw.disabled = playClean.disabled = true;
+    downloadRaw.disabled = downloadClean.disabled = true;
+
+    recording = true;
+    recordBtn.textContent = '■ Stop';
     rawRec.start();
     cleanRec.start();
 
-    for (let s = 5; s >= 1; s--) {
-      recStatus.textContent = `● Recording… ${s}s — keep talking over the noise`;
-      await wait(1000);
-    }
-    rawRec.stop();
-    cleanRec.stop();
+    let stopped = false;
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      clearTimeout(capTimer);
+      clearInterval(ticker);
+      if (rawRec.state !== 'inactive') rawRec.stop();
+      if (cleanRec.state !== 'inactive') cleanRec.stop();
+    };
+    stopRecording = stop;
+    const capTimer = setTimeout(stop, MAX_RECORD_MS);
+
+    const startedAt = Date.now();
+    const fmt = (ms: number) => {
+      const total = Math.floor(ms / 1000);
+      return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+    };
+    const tick = () => {
+      const elapsed = Date.now() - startedAt;
+      const remaining = Math.max(0, MAX_RECORD_MS - elapsed);
+      recStatus.textContent = `● Recording ${fmt(elapsed)} — click Stop when done (auto-stops in ${fmt(remaining)})`;
+    };
+    tick();
+    const ticker = setInterval(tick, 250);
+
     await done;
+    clearInterval(ticker);
 
     const type = mimeType ?? 'audio/webm';
-    rawAudio.src = URL.createObjectURL(new Blob(rawChunks, { type }));
-    cleanAudio.src = URL.createObjectURL(new Blob(cleanChunks, { type }));
-    recStatus.textContent = 'Done. Play both — same words, with and without the filter.';
-    recordBtn.disabled = false;
+    if (rawUrl) URL.revokeObjectURL(rawUrl);
+    if (cleanUrl) URL.revokeObjectURL(cleanUrl);
+    rawUrl = URL.createObjectURL(new Blob(rawChunks, { type }));
+    cleanUrl = URL.createObjectURL(new Blob(cleanChunks, { type }));
+    rawAudio.src = rawUrl;
+    cleanAudio.src = cleanUrl;
+
+    const ext = extFor(type);
+    wireDownload(downloadRaw, () => rawUrl, `original.${ext}`);
+    wireDownload(downloadClean, () => cleanUrl, `denoised.${ext}`);
+
+    recStatus.textContent = 'Done. Play both — same words, with and without the filter — or download them.';
+    recording = false;
+    stopRecording = null;
+    recordBtn.textContent = '● Record';
     playRaw.disabled = playClean.disabled = false;
+    downloadRaw.disabled = downloadClean.disabled = false;
   });
 
   wirePlay(playRaw, rawAudio, '▶ Play original', cleanAudio);
   wirePlay(playClean, cleanAudio, '▶ Play denoised', rawAudio);
+}
+
+// Trigger a file download of the current object URL under a friendly name.
+function wireDownload(btn: HTMLButtonElement, url: () => string | null, filename: string) {
+  btn.onclick = () => {
+    const href = url();
+    if (!href) return;
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
 }
 
 function wirePlay(btn: HTMLButtonElement, el: HTMLAudioElement, label: string, other: HTMLAudioElement) {
